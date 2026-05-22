@@ -1,0 +1,27 @@
+[package]
+name        = "qaudit-hsm"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+authors     = { workspace = true }
+repository  = { workspace = true }
+description = "HSM signing substrate (software + PKCS#11) for Cofre Soberano PQ."
+keywords    = ["pkcs11", "hsm", "ml-dsa", "audit"]
+categories  = ["cryptography", "hardware-support"]
+
+[features]
+default = []
+# Build the PKCS#11 backend. Requires a PKCS#11 v3 driver (.so/.dll/.dylib)
+# at runtime — Dinamo, YubiHSM 2, Thales Luna, Entrust nShield, Atos
+# Trustway, SoftHSM2. Build itself does not need libclang.
+pkcs11 = ["dep:cryptoki"]
+
+[dependencies]
+qaudit-core = { path = "../qaudit-core" }
+thiserror   = { workspace = true }
+hex         = { workspace = true }
+zeroize     = { workspace = true }
+cryptoki    = { version = "0.10", optional = true }
+
+[dev-dependencies]
+ciborium = { workspace = true }

@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/qaudit-core",
+    "crates/qaudit-hsm",
+    "crates/qaudit",
+    "crates/qaudit-portal",
+    "crates/qtransport-cspq",
+    "crates/qgateway-core",
+    "crates/qgateway",
+]
+
+[workspace.package]
+version      = "1.0.1"
+edition      = "2021"
+license      = "AGPL-3.0-or-later"
+authors      = ["Cristian Cezar Moisés <sac@securityops.co>"]
+repository   = "https://git.securityops.co/cristiancmoises/cofre-soberano-pq"
+homepage     = "https://securityops.co"
+rust-version = "1.95"
+
+[workspace.dependencies]
+fips204     = "0.4"
+blake3      = "1.5"
+serde       = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+ciborium    = "0.2"
+clap        = { version = "4.5", features = ["derive"] }
+anyhow      = "1"
+thiserror   = "1"
+hex         = "0.4"
+chrono      = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
+zeroize     = { version = "1", features = ["derive"] }
+quick-xml   = { version = "0.36", features = ["serialize"] }
+rand_core   = { version = "0.6", features = ["getrandom"] }
+fips203     = "0.4"
+chacha20poly1305 = "0.10"
+hkdf        = "0.12"
+sha3        = "0.10"
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time", "sync"] }
+tokio-rustls = "0.26"
+rustls       = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+bytes       = "1"
+toml        = "0.8"
+tracing     = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+arc-swap    = "1"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"
+
+[profile.dev]
+opt-level = 1

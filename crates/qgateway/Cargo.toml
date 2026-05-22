@@ -1,0 +1,52 @@
+[package]
+name        = "qgateway"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+authors     = { workspace = true }
+repository  = { workspace = true }
+description = "QGateway daemon — TCP↔PQ reverse-proxy for Cofre Soberano PQ."
+keywords    = ["pqc", "proxy", "gateway"]
+categories  = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "qgateway"
+path = "src/main.rs"
+
+[dependencies]
+qaudit-core     = { path = "../qaudit-core" }
+qaudit-hsm      = { path = "../qaudit-hsm" }
+qtransport-cspq = { path = "../qtransport-cspq" }
+chrono          = { workspace = true }
+qgateway-core   = { path = "../qgateway-core" }
+clap            = { workspace = true }
+anyhow          = { workspace = true }
+tokio           = { workspace = true }
+tracing         = { workspace = true }
+tracing-subscriber = { workspace = true }
+hex             = { workspace = true }
+# Sprint 37: TLS PEM parsing for the `validate` subcommand. Re-implements
+# minimal cert/key parse so dry-run can catch malformed TLS files without
+# depending on qgateway-core's internal rustls type signatures.
+rustls-pemfile  = { workspace = true }
+
+[features]
+default = []
+# Build with PKCS#11 audit signer support (requires libclang at build time —
+# see the qaudit-hsm crate for details).
+pkcs11 = ["qaudit-hsm/pkcs11"]
+
+[dev-dependencies]
+# Sprint 25: integration tests spawn the qgateway binary, send SIGHUP via
+# `nix::sys::signal::kill`, and scrape /metrics over raw HTTP. tempfile
+# isolates each test's audit dir / peer dir / config file.
+nix      = { version = "0.29", features = ["signal"] }
+tempfile = "3"
+tokio    = { workspace = true }
+# Sprint 26: audit chain integrity tests read the per-tenant `.qa` files
+# after SIGHUP cycles and run the chain verifier.
+qaudit-core = { path = "../qaudit-core" }
+# Sprint 33: state-machine fuzz test crafts a valid CLIENT_HELLO frame
+# by generating an ephemeral ML-KEM-1024 keypair, then probes the
+# daemon's CLIENT_FINISH parser with various malformed inputs.
+fips203 = { workspace = true }

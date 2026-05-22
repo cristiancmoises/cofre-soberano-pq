@@ -1,0 +1,28 @@
+[package]
+name        = "qtransport-cspq"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+authors     = { workspace = true }
+repository  = { workspace = true }
+description = "Reference post-quantum transport for Cofre Soberano PQ — ML-KEM-1024 + ML-DSA-87 + ChaCha20-Poly1305."
+keywords    = ["pqc", "ml-kem", "ml-dsa", "transport", "noise"]
+categories  = ["cryptography", "network-programming"]
+
+[dependencies]
+qaudit-core = { path = "../qaudit-core" }
+fips203     = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf        = { workspace = true }
+sha3        = { workspace = true }
+blake3      = { workspace = true }
+tokio       = { workspace = true }
+bytes       = { workspace = true }
+thiserror   = { workspace = true }
+hex         = { workspace = true }
+rand_core   = { workspace = true }
+zeroize     = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tokio       = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time", "sync", "test-util"] }

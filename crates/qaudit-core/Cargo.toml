@@ -1,0 +1,23 @@
+[package]
+name        = "qaudit-core"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+authors     = { workspace = true }
+repository  = { workspace = true }
+description = "Post-quantum signed audit log library for the Cofre Soberano PQ stack."
+keywords    = ["pqc", "ml-dsa", "audit", "merkle", "blake3"]
+categories  = ["cryptography"]
+
+[dependencies]
+fips204     = { workspace = true }
+blake3      = { workspace = true }
+serde       = { workspace = true }
+serde_bytes = { workspace = true }
+ciborium    = { workspace = true }
+thiserror   = { workspace = true }
+hex         = { workspace = true }
+chrono      = { workspace = true }
+zeroize     = { workspace = true }
+rand_core   = { workspace = true }
+quick-xml   = { workspace = true }

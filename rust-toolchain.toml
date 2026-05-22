@@ -1,0 +1,8 @@
+[toolchain]
+# Sprint 38: pinned exactly to the Rust release used to build v1.0.
+# Reproducible builds require this — "stable" drifts across releases.
+# Bump this field intentionally when validating a new Rust version
+# against the test suite + clippy + pkcs11 build.
+channel    = "1.95.0"
+components = ["rustfmt", "clippy"]
+profile    = "minimal"

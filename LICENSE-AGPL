@@ -1,0 +1,18 @@
+                    GNU AFFERO GENERAL PUBLIC LICENSE
+                       Version 3, 19 November 2007
+
+This file is a placeholder in the source tree. Before any public release of
+the Cofre Soberano PQ project, this file MUST be replaced by the verbatim
+GNU Affero General Public License v3 text from:
+
+    https://www.gnu.org/licenses/agpl-3.0.txt
+
+A SHA-256 fingerprint of the canonical text is recorded in /docs/AGPL.sha256
+and verified by the release pipeline.
+
+Cofre Soberano PQ is licensed to you under the terms of the GNU Affero General
+Public License version 3, or (at your option) any later version, as published
+by the Free Software Foundation. See <https://www.gnu.org/licenses/agpl-3.0>.
+
+  Copyright (C) 2026 Cristian Cezar Moises / Security Ops
+  Contact: sac@securityops.co  ·  https://securityops.co
