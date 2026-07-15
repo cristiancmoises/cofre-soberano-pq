@@ -25,7 +25,11 @@
 //!
 //! - The signing key NEVER leaves the HSM. Compromise of the qaudit host does
 //!   not yield key material.
-//! - PIN material is held in [`zeroize::Zeroizing`] and wiped on drop.
+//! - During `open()` the PIN is copied into a [`zeroize::Zeroizing`] buffer and
+//!   an [`AuthPin`] (itself a zeroizing secret) for the `C_Login` call, then
+//!   every transient copy is wiped; the signer does not retain the PIN. Note
+//!   the PIN you place in [`Pkcs11Config::user_pin`] is a plain `String` and is
+//!   only wiped when that config value is dropped — keep the config short-lived.
 //! - The PKCS#11 driver itself is a trusted component; sign your driver
 //!   binaries and verify on load.
 
@@ -34,7 +38,7 @@ use qaudit_core::{Error as CoreError, PublicKey, Result as CoreResult, Signature
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::mechanism::vendor_defined::{VendorDefinedMechanism, CKM_VENDOR_DEFINED};
 use cryptoki::mechanism::{Mechanism, MechanismType};
-use cryptoki::object::{Attribute, AttributeType, ObjectHandle};
+use cryptoki::object::{Attribute, AttributeType, ObjectClass, ObjectHandle};
 use cryptoki::session::{Session, UserType};
 use cryptoki::slot::Slot;
 use cryptoki::types::AuthPin;
@@ -50,7 +54,9 @@ pub struct Pkcs11Config {
     pub module_path: PathBuf,
     /// Slot index. Use `cryptoki::Pkcs11::get_slots_with_token()` to enumerate.
     pub slot_index: usize,
-    /// User PIN. Held only inside the Pkcs11Signer in a Zeroizing buffer.
+    /// User PIN. Consumed during `open()` for the HSM login and NOT retained by
+    /// the resulting signer. This field itself is a plain `String`; it is wiped
+    /// only when the `Pkcs11Config` is dropped, so keep the config short-lived.
     pub user_pin: Option<String>,
     /// `CKA_LABEL` of the private key inside the HSM.
     pub key_label: String,
@@ -86,8 +92,9 @@ impl Pkcs11Config {
         }
     }
 
-    /// Set the PIN. The PIN is moved into a Zeroizing buffer once the signer
-    /// opens; this struct only holds it transiently.
+    /// Set the PIN. It is stored on this config as a plain `String` until
+    /// `open()` consumes it (copying into a zeroizing buffer for the login and
+    /// then wiping every transient copy); the signer never retains it.
     #[must_use]
     pub fn with_pin(mut self, pin: impl Into<String>) -> Self {
         self.user_pin = Some(pin.into());
@@ -193,8 +200,9 @@ impl Pkcs11Signer {
             .map_err(|e| CoreError::Internal(format!("PKCS#11 OpenSession: {e}")))?;
 
         if let Some(pin) = config.user_pin.as_ref() {
-            // PIN is moved out of config and into a Zeroizing buffer; the
-            // AuthPin wrapper itself also zeroizes its inner.
+            // PIN is copied into a Zeroizing buffer for the login call; the
+            // AuthPin wrapper itself also zeroizes its inner secret. Both
+            // transient copies are wiped when this scope ends.
             let pin = Zeroizing::new(pin.clone());
             session
                 .login(UserType::User, Some(&AuthPin::new(pin.to_string())))
@@ -257,9 +265,25 @@ impl Pkcs11Signer {
     fn sign_inner(&self, message: &[u8]) -> CoreResult<Signature> {
         let mech_type = MechanismType::new_vendor_defined(self.mechanism_id)
             .map_err(|e| CoreError::Internal(format!("PKCS#11 mechanism type: {e}")))?;
-        // No mechanism parameter — ML-DSA per FIPS 204 does not take params on
-        // the wire. Context binding is applied by qaudit-core before calling
-        // sign(), so the HSM sees the canonical CBOR payload directly.
+        // We pass the canonical CBOR payload straight to `C_Sign` with no
+        // mechanism parameter.
+        //
+        // CONTEXT-BINDING REQUIREMENT (parity with the software signer):
+        // `qaudit_core::verify` always verifies under the ML-DSA context string
+        // `SIG_CONTEXT` (`b"cofre-soberano-pq/qaudit/v1"`), which the software
+        // `KeyPair::sign` applies via FIPS-204 `try_sign(msg, ctx)`. `qaudit_core`
+        // does NOT pre-wrap the message — the context is applied *inside* the
+        // signer. Therefore the HSM's ML-DSA mechanism MUST bind the SAME context
+        // for its signatures to verify. Whether that context is supplied by the
+        // vendor mechanism's own policy, a future standardized `CKM_ML_DSA`
+        // parameter, or key attributes is HSM-specific, so we cannot inject it
+        // portably here — a `None` parameter assumes the configured mechanism
+        // already binds the required context.
+        //
+        // This is why `Signer::public_key()` parity is not enough: operators
+        // MUST run the `live_hsm_sign_verify` test (which round-trips through
+        // `qaudit_core::verify_signature`) against their HSM before production.
+        // A context mismatch surfaces there as a hard verification failure.
         let mech = Mechanism::VendorDefined(VendorDefinedMechanism::new::<()>(mech_type, None));
         let session = self
             .session
@@ -272,13 +296,29 @@ impl Pkcs11Signer {
     }
 }
 
-fn find_key_by_label(session: &Session, label: &str, _private: bool) -> CoreResult<ObjectHandle> {
-    let template = [Attribute::Label(label.as_bytes().to_vec())];
+fn find_key_by_label(session: &Session, label: &str, private: bool) -> CoreResult<ObjectHandle> {
+    // Filter on CKA_CLASS as well as CKA_LABEL. The private and public key are
+    // allowed to share a label (`pubkey_label` defaults to `key_label`); if we
+    // matched on label alone, `FindObjects` would return both and `.next()`
+    // could hand back the wrong one — e.g. the public key where a private key
+    // is required, so `C_Sign` would fail with the object handle it was given.
+    let class = if private {
+        ObjectClass::PRIVATE_KEY
+    } else {
+        ObjectClass::PUBLIC_KEY
+    };
+    let template = [
+        Attribute::Class(class),
+        Attribute::Label(label.as_bytes().to_vec()),
+    ];
     let handles = session
         .find_objects(&template)
         .map_err(|e| CoreError::Internal(format!("PKCS#11 FindObjects: {e}")))?;
     handles.into_iter().next().ok_or_else(|| {
-        CoreError::Internal(format!("PKCS#11: no object found with label '{label}'"))
+        let kind = if private { "private" } else { "public" };
+        CoreError::Internal(format!(
+            "PKCS#11: no {kind}-key object found with label '{label}'"
+        ))
     })
 }
 
@@ -461,7 +501,6 @@ mod tests {
     fn pkcs11_signer_factory_with_telemetry_is_clonable_via_arc() {
         // Sprint 10: ensure the factory + telemetry composition compiles
         // and the telemetry hook is Send+Sync as required by the trait.
-        use crate::HsmTelemetry as _;
         use std::sync::Arc;
         struct Sink;
         impl crate::HsmTelemetry for Sink {}

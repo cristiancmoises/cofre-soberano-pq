@@ -3,7 +3,8 @@
 //! Read-only HTTP viewer for `.qa` audit logs.
 //!
 //! Serves a single-page HTML viewer with header info, verification badge, and
-//! a paginated entry table. Companion JSON API for tooling.
+//! the full entry table (pagination via `?offset=N&limit=M` is available on
+//! the JSON `/api/entries` endpoint only). Companion JSON API for tooling.
 //!
 //! ```text
 //!   qaudit-portal --log audit.qa --pk qaudit.pk --listen 127.0.0.1:8080
@@ -69,10 +70,9 @@ struct AppState {
     verify_error: Option<String>,
 }
 
-/// Magic prefix used by `qgateway audit-keygen` for `.audit.pub` files.
-///
-// Public-key file format auto-detection (raw 2592 B vs. qgateway-framed
-// 2600 B with the `AUDITPK0` magic prefix) lives in `qaudit-core` so that
+// Magic prefix (`AUDITPK0`) used by `qgateway audit-keygen` for `.audit.pub`
+// files. Public-key file format auto-detection (raw 2592 B vs. qgateway-framed
+// 2600 B with that magic prefix) lives in `qaudit-core` so that
 // `qaudit verify --pk` and `qaudit-portal --pk` share the same logic.
 
 #[tokio::main]

@@ -1,5 +1,7 @@
 # Cofre Soberano PQ — Operator Runbook
 
+🇧🇷 **Português:** [RUNBOOK.pt-BR.md](RUNBOOK.pt-BR.md)
+
 Production deployment, daily operations, and troubleshooting for the
 qgateway sidecar. This document is the **operator-facing** companion
 to `SPEC.md` (which is the design spec). If you're deploying or running
@@ -218,9 +220,9 @@ ss -tlnp | grep qgateway
 sudo -u qgateway test -f /var/log/qgateway/alice.qa && echo "audit log ok"
 
 # 5. Audit chain header parses
-sudo -u qgateway qgateway audit-verify \
+sudo -u qgateway qaudit verify \
     --log /var/log/qgateway/alice.qa \
-    --pubkey /etc/qgateway/audit.pub
+    --pk /etc/qgateway/audit.pub
 ```
 
 If any of these fail, see §6 Troubleshooting.
@@ -327,7 +329,7 @@ since Sprint 35).
   4658 typically expects 5 years for security-relevant logs)
 - Verify each archive immediately after rotation:
   ```bash
-  qgateway audit-verify --log <archive>.qa --pubkey audit.pub
+  qaudit verify --log <archive>.qa --pk audit.pub
   ```
   This is the same command an auditor runs to validate the chain
   cryptographically; passing it in your retention pipeline catches
@@ -486,14 +488,14 @@ To verify a chain offline (the auditor's workflow):
 
 ```bash
 # Verify against the public key embedded in the chain header
-qgateway audit-verify --log /path/to/alice.qa
+qaudit verify --log /path/to/alice.qa
 
 # Verify against an externally-provided public key (the auditor's
 # preferred mode — proves the chain header's pubkey matches the
 # pubkey you published)
-qgateway audit-verify \
+qaudit verify \
     --log /path/to/alice.qa \
-    --pubkey /path/to/audit.pub
+    --pk /path/to/audit.pub
 ```
 
 Sprint 26 + Sprint 30 integration tests prove the chain survives
@@ -508,7 +510,7 @@ Suggested workflow:
    or on size threshold
 2. A separate process (cron, systemd timer) picks up archived `.qa`
    files from `/var/log/qgateway/` and:
-   - Runs `qgateway audit-verify` on each (catches storage corruption
+   - Runs `qaudit verify` on each (catches storage corruption
      immediately)
    - Uploads to immutable object storage (S3 Object Lock, MinIO with
      compliance mode, etc.)
@@ -737,7 +739,7 @@ access, audit chain tamper):
 4. **Verify the chains** to detect tampering:
    ```bash
    for f in /var/log/qgateway/*.qa; do
-       qgateway audit-verify --log "$f" --pubkey /etc/qgateway/audit.pub
+       qaudit verify --log "$f" --pk /etc/qgateway/audit.pub
    done
    ```
    A `verify failed` result on a previously-valid chain is strong

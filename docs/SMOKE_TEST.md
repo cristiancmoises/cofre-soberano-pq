@@ -1,5 +1,7 @@
 # SMOKE TEST — End-to-end production validation
 
+🇧🇷 **Português:** [SMOKE_TEST.pt-BR.md](SMOKE_TEST.pt-BR.md)
+
 This procedure validates that a fresh **Cofre Soberano PQ** deployment
 works against real network conditions: two hosts, one TCP port across
 the public internet, post-quantum handshake, audit chain verified
@@ -66,7 +68,7 @@ sudo install -m 0755 target/release/qaudit        /usr/local/bin/
 sudo install -m 0755 target/release/qaudit-portal /usr/local/bin/
 
 # Confirm
-qgateway --version    # cofre-soberano-pq 1.0.1
+qgateway --version    # qgateway 1.0.1
 qaudit --version
 qaudit-portal --version
 ```
@@ -158,18 +160,20 @@ ls /etc/qgateway/peers/$TENANT/
 role           = "serve-tcp"
 metrics_listen = "127.0.0.1:9101"
 
-identity_sk = "/etc/qgateway/client.skid"
-identity_pk = "/etc/qgateway/client.cspqid.pub"
+identity_key = "/etc/qgateway/client.skid"
+identity_pub = "/etc/qgateway/client.cspqid.pub"
 
-audit_sk = "/etc/qgateway/client.audit.skid"
-audit_pk = "/etc/qgateway/client.audit.pub"
+[audit_signer]
+kind       = "softkey"
+secret_key = "/etc/qgateway/client.audit.skid"
+public_key = "/etc/qgateway/client.audit.pub"
 
-[[tenant]]
-name      = "alice"
-listen    = "127.0.0.1:18080"
-peer_pq   = "203.0.113.10:3007"
-peer_dir  = "/etc/qgateway/peers/alice"
-audit_log = "/var/log/qgateway/alice.qa"
+[[tenants]]
+name         = "alice"
+listen       = "127.0.0.1:18080"
+peer_pq      = "203.0.113.10:3007"
+peer_pub_dir = "/etc/qgateway/peers/alice"
+audit_log    = "/var/log/qgateway/alice.qa"
 ```
 
 Replace `203.0.113.10:3007` with your real `$SERVER_IP:$PQ_PORT`.
@@ -180,18 +184,20 @@ Replace `203.0.113.10:3007` with your real `$SERVER_IP:$PQ_PORT`.
 role           = "serve-pq"
 metrics_listen = "127.0.0.1:9100"
 
-identity_sk = "/etc/qgateway/server.skid"
-identity_pk = "/etc/qgateway/server.cspqid.pub"
+identity_key = "/etc/qgateway/server.skid"
+identity_pub = "/etc/qgateway/server.cspqid.pub"
 
-audit_sk = "/etc/qgateway/server.audit.skid"
-audit_pk = "/etc/qgateway/server.audit.pub"
+[audit_signer]
+kind       = "softkey"
+secret_key = "/etc/qgateway/server.audit.skid"
+public_key = "/etc/qgateway/server.audit.pub"
 
-[[tenant]]
-name      = "alice"
-listen    = "0.0.0.0:3007"
-backend   = "127.0.0.1:3008"
-peer_dir  = "/etc/qgateway/peers/alice"
-audit_log = "/var/log/qgateway/alice.qa"
+[[tenants]]
+name         = "alice"
+listen       = "0.0.0.0:3007"
+backend      = "127.0.0.1:3008"
+peer_pub_dir = "/etc/qgateway/peers/alice"
+audit_log    = "/var/log/qgateway/alice.qa"
 ```
 
 ### Validate on both sides

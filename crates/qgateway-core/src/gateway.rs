@@ -397,10 +397,8 @@ impl SniDispatchTable {
                     return Err(anyhow!("duplicate wildcard SNI in dispatch table: {sni}"));
                 }
                 wildcards.push((suffix, ctx));
-            } else {
-                if by_sni.insert(sni.clone(), ctx).is_some() {
-                    return Err(anyhow!("duplicate SNI in dispatch table: {sni}"));
-                }
+            } else if by_sni.insert(sni.clone(), ctx).is_some() {
+                return Err(anyhow!("duplicate SNI in dispatch table: {sni}"));
             }
         }
         Ok(Self {

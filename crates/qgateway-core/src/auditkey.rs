@@ -10,11 +10,11 @@
 //!
 //! ```text
 //!   .audit.pub  (audit signer public key, world-readable):
-//!     magic     = "AUDITPK01"  (8 B)
+//!     magic     = "AUDITPK0"  (8 B)
 //!     ml-dsa-87 = 2592 B raw
 //!
 //!   .audit.skid (audit signer secret key, mode 0600 on unix):
-//!     magic     = "AUDITSK01"  (8 B)
+//!     magic     = "AUDITSK0"  (8 B)
 //!     ml-dsa-87 = 4896 B raw
 //! ```
 

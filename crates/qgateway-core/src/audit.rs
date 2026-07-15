@@ -4,8 +4,10 @@
 //! an mpsc channel to a dedicated background task that owns a mutable
 //! `AuditLog` and persists entries to disk after each batch.
 //!
-//! The channel is bounded; on backpressure we drop the oldest pending entry
-//! and increment `audit_failures` so operators see drops in Prometheus.
+//! The channel is bounded; on backpressure `emit()` uses `try_send`, so the
+//! entry being emitted (the newest) is dropped while already-queued entries are
+//! preserved, and `audit_failures` is incremented so operators see drops in
+//! Prometheus.
 
 use qaudit_core::{AuditEvent, AuditLog};
 use std::path::{Path, PathBuf};

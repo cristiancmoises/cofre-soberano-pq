@@ -4,6 +4,8 @@
 >
 > **Compress everything. Trust nothing. Encrypt always.**
 
+🇧🇷 **Leia em português:** [README.pt-BR.md](README.pt-BR.md)
+
 A monorepo for the **Cofre Soberano PQ (CSPQ)** product line — a post-quantum
 cryptographic boundary for Brazilian regulated industries (banks, insurers,
 healthcare, government). See [`SPEC.md`](./SPEC.md) for the full specification
@@ -87,7 +89,7 @@ cargo build --release --locked
 ./target/release/qaudit export --log audit.qa --format jsonl --out export.jsonl
 
 # Read-only web portal for auditors (binds 127.0.0.1 by default)
-./target/release/qaudit-portal --log audit.qa --pk qaudit.pk --listen 127.0.0.1:8080
+./target/release/qaudit-portal --log audit.qa --pk audit.pk --listen 127.0.0.1:8080
 # then open http://127.0.0.1:8080/ — also exposes /api/info, /api/entries, /api/verify
 ```
 

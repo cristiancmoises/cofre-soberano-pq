@@ -1,5 +1,7 @@
 # Changelog
 
+🇧🇷 **Português:** [CHANGELOG.pt-BR.md](CHANGELOG.pt-BR.md)
+
 All notable changes to this project will be documented in this file.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -10,6 +12,89 @@ explicit `suite` identifier in every chain header
 (`suite = "cspq-2026"` in this release). Any change that breaks
 suite-compatibility will require both a major version bump **and** a
 new suite identifier.
+
+---
+
+## [1.0.2] — 2026-07-15
+
+Documentation-accuracy and HSM-hardening release. **No wire-protocol,
+`.qa` file-format, or audit-suite change** — `1.0.0` ↔ `1.0.1` ↔ `1.0.2`
+are fully compatible in both directions, and mixed-version deployments
+remain safe (`suite = "cspq-2026"`).
+
+### Fixed
+
+- **PKCS#11 key lookup now filters on `CKA_CLASS`.**
+  `find_key_by_label` matched on `CKA_LABEL` alone and returned the first
+  object found. Because the audit private and public keys are allowed to
+  share a label (`pubkey_label` defaults to `key_label`), the lookup could
+  return the public-key handle where a private-key handle was required,
+  making `C_Sign` fail. The lookup now constrains the search to
+  `CKO_PRIVATE_KEY` / `CKO_PUBLIC_KEY` as appropriate.
+  (`crates/qaudit-hsm/src/pkcs11.rs`)
+
+- **HSM signing context requirement is now documented honestly.** A code
+  comment claimed the ML-DSA domain-separation context was "applied by
+  qaudit-core before calling sign()". It is not: the context
+  (`b"cofre-soberano-pq/qaudit/v1"`) is applied *inside* the software
+  signer via FIPS-204 `try_sign(msg, ctx)`, so an HSM mechanism that does
+  not bind the same context produces signatures that fail
+  `qaudit_core::verify`. The comment now states the parity requirement and
+  points operators at the `live_hsm_sign_verify` gate they must run before
+  trusting an HSM in production. (`crates/qaudit-hsm/src/pkcs11.rs`)
+
+- **`docs/SMOKE_TEST.md` `sidecar.toml` examples now parse.** The client
+  and server examples used keys the loader rejects
+  (`identity_sk`/`identity_pk`, top-level `audit_sk`/`audit_pk`,
+  `[[tenant]]`, `peer_dir`). They now use the real schema
+  (`identity_key`/`identity_pub`, an `[audit_signer]` block, `[[tenants]]`,
+  `peer_pub_dir`) and were verified with `qgateway validate`.
+
+- **Runbook/HSM docs no longer reference a nonexistent subcommand.**
+  `docs/RUNBOOK.md` and `docs/HSM.md` invoked `qgateway audit-verify
+  --pubkey …`, which does not exist. Replaced with the real
+  `qaudit verify --pk …` (which accepts the framed `.audit.pub` produced
+  by `qgateway audit-keygen`).
+
+- **Documentation metric names and samples corrected.** The admission
+  module documented a nonexistent `qgateway_admission_rejected_total{reason=…}`
+  metric — the exporter emits `qgateway_admission_rejected_quota_total` and
+  `qgateway_admission_rejected_rate_total`, each with a `tenant="…"` label.
+  The HSM metrics sample in `docs/HSM.md` was missing that mandatory
+  `tenant="…"` label. The audit-emitter doc claimed backpressure "drops the
+  oldest" entry — `emit()` uses `try_send`, so it drops the newest
+  (incoming) entry and preserves already-queued ones. The `.audit.pub` /
+  `.audit.skid` magic in `crates/qgateway-core/src/auditkey.rs` was
+  documented as `AUDITPK01`/`AUDITSK01`; the real 8-byte magic is
+  `AUDITPK0`/`AUDITSK0`. The `README.md` portal example passed
+  `--pk qaudit.pk`; `qaudit init` writes `audit.pk`.
+
+- **`qaudit-portal` module docs corrected.** The crate doc described a
+  "paginated entry table", but the HTML view renders the full table
+  (pagination exists only on the JSON `/api/entries` endpoint); and an
+  orphaned `///` doc comment was being attached to `main()`.
+
+### Added
+
+- **Brazilian Portuguese (pt-BR) documentation.** Faithful translations of
+  the flagship docs for the Brazil-first audience (Bacen, CVM, ANPD,
+  SUSEP): `README.pt-BR.md`, `docs/RUNBOOK.pt-BR.md`, `docs/HSM.pt-BR.md`,
+  `docs/SMOKE_TEST.pt-BR.md`, and `CHANGELOG.pt-BR.md`. All code, commands,
+  configuration keys, flags, and crypto identifiers are preserved verbatim;
+  the English documents remain normative for licensing terms.
+
+### Changed
+
+- Clippy hygiene: collapsed two `else { if … }` blocks flagged by
+  `clippy::collapsible_else_if` (`crates/qgateway-core/src/gateway.rs`,
+  `crates/qgateway-core/src/tls.rs`) and removed an unused test import
+  under `--features pkcs11`. No behavioural change. Workspace is clippy-clean
+  on both the default feature set and `--features qaudit-hsm/pkcs11`.
+
+### Wire / format compatibility
+
+`1.0.1` ↔ `1.0.2`: **fully compatible**. No changes to the wire protocol,
+the `.qa` file format, or the audit suite identifier.
 
 ---
 

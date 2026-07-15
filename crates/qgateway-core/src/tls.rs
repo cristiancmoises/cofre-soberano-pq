@@ -461,13 +461,11 @@ impl MultiSniCertResolver {
                     ));
                 }
                 wildcards.push((suffix, entry.certified));
-            } else {
-                if by_sni.insert(entry.sni.clone(), entry.certified).is_some() {
-                    return Err(anyhow!(
-                        "MultiSniCertResolver: duplicate SNI hostname {:?}",
-                        entry.sni
-                    ));
-                }
+            } else if by_sni.insert(entry.sni.clone(), entry.certified).is_some() {
+                return Err(anyhow!(
+                    "MultiSniCertResolver: duplicate SNI hostname {:?}",
+                    entry.sni
+                ));
             }
         }
         Ok(Self { by_sni, wildcards })

@@ -6,14 +6,15 @@
 //! 1. **Per-tenant concurrency quota** — a tokio semaphore caps the number
 //!    of in-flight sessions per tenant. Rejected connections are dropped
 //!    immediately (TCP RST) and counted in the metric
-//!    `qgateway_admission_rejected_total{tenant=,reason="quota"}`.
+//!    `qgateway_admission_rejected_quota_total{tenant="<name>"}`.
 //!    Rationale: prevents one misbehaving tenant from saturating the
 //!    accept queue / file descriptors on shared SNI ports.
 //!
 //! 2. **Per-source-IP token bucket** — a sharded HashMap keyed by source
 //!    IP holds a bucket per peer. Each accept consumes one token; refill
 //!    happens lazily on next accept based on elapsed wall time. Rejected
-//!    connections are also dropped and counted as `reason="rate"`.
+//!    connections are also dropped and counted in the metric
+//!    `qgateway_admission_rejected_rate_total{tenant="<name>"}`.
 //!    Rationale: a single noisy source can't overwhelm the handshake
 //!    pipeline (which costs ML-KEM-1024 + ML-DSA-87 verify per session).
 //!

@@ -1,5 +1,7 @@
 # Cofre Soberano PQ — PKCS#11 HSM Integration
 
+🇧🇷 **Português:** [HSM.pt-BR.md](HSM.pt-BR.md)
+
 Hardware-security-module backing for the audit signer. Production
 deployments in regulated industries (Brazilian banking, government)
 typically require that signing keys never leave a certified hardware
@@ -166,11 +168,13 @@ After starting:
 ```bash
 curl -s http://127.0.0.1:9100/metrics | grep hsm_
 
-# Expected output (counters at 0 initially, will increment with traffic):
-qgateway_hsm_sessions_opened_total 1
-qgateway_hsm_sessions_failed_total 0
-qgateway_hsm_sign_ops_total 0
-qgateway_hsm_sign_failures_total 0
+# Expected output (counters at 0 initially, will increment with traffic).
+# Every metric carries a per-tenant `tenant="<name>"` label — the exporter
+# emits one line per tenant registry:
+qgateway_hsm_sessions_opened_total{tenant="alice"} 1
+qgateway_hsm_sessions_failed_total{tenant="alice"} 0
+qgateway_hsm_sign_ops_total{tenant="alice"} 0
+qgateway_hsm_sign_failures_total{tenant="alice"} 0
 ```
 
 `hsm_sessions_opened_total = 1` confirms the daemon opened its PKCS#11
@@ -229,8 +233,8 @@ If `hsm_sign_failures_total > 0` is sustained:
    `RUNBOOK.md` §4.6 catches this)
 2. Determine whether the chain still verifies:
    ```bash
-   qgateway audit-verify --log /var/log/qgateway/<tenant>.qa \
-       --pubkey /etc/qgateway/audit.pub
+   qaudit verify --log /var/log/qgateway/<tenant>.qa \
+       --pk /etc/qgateway/audit.pub
    ```
 3. If verification fails, the chain has a gap — initiate incident
    response per `RUNBOOK.md` §9
