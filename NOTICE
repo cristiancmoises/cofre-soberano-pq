@@ -1,0 +1,20 @@
+Cofre Soberano PQ licensing notice
+==================================
+
+Copyright (C) 2026 Cristian Cezar Moisés / Security Ops, plus other copyright
+holders identified by individual notices and repository history.
+
+First-party Cofre Soberano PQ source is available under
+
+  AGPL-3.0-or-later OR LicenseRef-Cofre-Soberano-PQ-Commercial
+
+The complete public license is in LICENSE-AGPL. LICENSE-COMMERCIAL is an
+inquiry and scope notice, not a commercial license grant. Commercial rights
+require a separate written agreement signed by the applicable copyright holder
+and licensee.
+
+Dependencies, HSM integrations, generated output, packaged services,
+contributed code, and separately noticed files retain their own licenses.
+Neither option grants trademark rights beyond truthful identification.
+
+Commercial licensing contact: sac@securityops.co

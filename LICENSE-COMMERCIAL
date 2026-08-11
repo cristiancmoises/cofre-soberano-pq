@@ -1,43 +1,29 @@
-COFRE SOBERANO PQ — COMMERCIAL LICENSE (TEMPLATE)
-====================================================
+COFRE SOBERANO PQ COMMERCIAL LICENSING NOTICE
 
-This file is a template, not an executed agreement. Executed agreements are
-issued individually by Security Ops to named licensees.
+Cofre Soberano PQ first-party source is available under the GNU Affero General
+Public License, version 3 or any later version, or under a separate written
+commercial agreement executed by the applicable copyright holder and
+licensee.
 
-The Cofre Soberano PQ software ("Software") is offered under two alternative
-licenses, at the licensee's option:
+THIS FILE IS NOT A COMMERCIAL LICENSE GRANT. It does not grant permission to
+embed, operate, modify, distribute, sublicense, or brand the software outside
+the AGPL. Commercial rights exist only in an executed agreement that names its
+licensee, exact source/version, and permitted use.
 
-  1. The GNU Affero General Public License, version 3 or later, as found in
-     the file LICENSE-AGPL. AGPL terms include the obligation to make the
-     complete corresponding source available to any user who interacts with
-     the Software over a network.
+No indemnification, service level, support window, warranty, patent,
+on-premises delivery, training, appliance redistribution, affiliate
+sublicensing, trademark permission, price, or term is promised by this public
+notice. Such a provision applies only if it is written in the executed
+agreement.
 
-  2. A commercial license granted by Security Ops (Cristian Cezar Moisés,
-     Caxias do Sul, RS, Brazil) on terms negotiated individually.
+Dependencies, HSM libraries, packaged services, generated artifacts,
+contributed code, and separately noticed material retain their own licenses.
+The licensor can commercially license only rights it owns or controls.
 
-The commercial license is intended for organizations — typically banks,
-insurance companies, exchanges, payment institutions, public-sector entities,
-and other regulated parties — who cannot satisfy the AGPL's source-disclosure
-obligation or who require terms not present in the AGPL, such as:
-
-  - Indemnification for IP infringement claims;
-  - A defined service-level agreement and named support contacts;
-  - A 24×7 incident response window;
-  - On-site delivery, training, integration with HSM substrate;
-  - Right to embed the Software in proprietary appliances and distribute it
-    under the licensee's brand;
-  - Sublicensing to specific affiliated entities under a master agreement.
-
-To inquire about a commercial license, contact:
+Commercial licensing inquiries:
 
   Security Ops
-  attn: Cristian Cezar Moisés
   sac@securityops.co
-  https://securityops.co
 
-Notice: choosing not to obtain a commercial license does not deprive any
-party of the rights granted by the AGPL. The AGPL remains a valid path to use,
-modify, and distribute the Software so long as its terms are honored.
-
-Copyright © 2026 Cristian Cezar Moisés. All rights reserved (under AGPL or
-individual commercial agreement, as applicable).
+Include the intended use and exact version. Never include secrets, private
+keys, credentials, HSM material, or customer data.

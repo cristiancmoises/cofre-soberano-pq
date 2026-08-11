@@ -1561,8 +1561,10 @@ cargo fmt   --all -- --check
 Dual-licensed:
 
 - **AGPL-3.0-or-later** — see [`LICENSE-AGPL`](./LICENSE-AGPL).
-- **Commercial license** available from Security Ops for organizations that
-  cannot accept AGPL terms (typical for regulated financial institutions).
+- **Separate commercial agreement** may be available for first-party code when
+  the AGPL option does not fit. Rights exist only in an agreement signed by
+  the applicable copyright holder and licensee. `LICENSE-COMMERCIAL` is an
+  inquiry/scope notice, not a grant, and dependencies retain their licenses.
   Contact `sac@securityops.co`.
 
 Copyright © 2026 Cristian Cezar Moisés / Security Ops.

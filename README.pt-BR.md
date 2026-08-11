@@ -1605,8 +1605,10 @@ cargo fmt   --all -- --check
 Licença dupla:
 
 - **AGPL-3.0-or-later** — veja [`LICENSE-AGPL`](./LICENSE-AGPL).
-- **Licença comercial** disponível pela Security Ops para organizações que não
-  podem aceitar os termos da AGPL (típico para instituições financeiras
-  reguladas). Contato: `sac@securityops.co`.
+- **Contrato comercial separado** pode estar disponível para código próprio
+  quando a opção AGPL não servir. Os direitos existem somente em contrato
+  assinado pelo titular aplicável e pelo licenciado. `LICENSE-COMMERCIAL` é um
+  aviso de consulta/escopo, não uma concessão, e dependências mantêm suas
+  próprias licenças. Contato: `sac@securityops.co`.
 
 Copyright © 2026 Cristian Cezar Moisés / Security Ops.

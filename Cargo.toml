@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version      = "1.0.2"
 edition      = "2021"
-license      = "AGPL-3.0-or-later"
+license      = "AGPL-3.0-or-later OR LicenseRef-Cofre-Soberano-PQ-Commercial"
 authors      = ["Cristian Cezar Moisés <sac@securityops.co>"]
 repository   = "https://git.securityops.co/cristiancmoises/cofre-soberano-pq"
 homepage     = "https://securityops.co"
