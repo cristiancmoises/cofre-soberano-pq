@@ -1553,9 +1553,9 @@ Software keys are dev-mode only.
 
 ## Distribution packaging
 
-The signed v1.0.3 release is available on [GitHub](https://github.com/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.3),
-[Codeberg](https://codeberg.org/berkeley/cofre-soberano-pq/releases/tag/v1.0.3),
-and [SecurityOps Brazil](https://git.securityops.com.br/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.3).
+The signed v1.0.4 release is available on [GitHub](https://github.com/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.4),
+[Codeberg](https://codeberg.org/berkeley/cofre-soberano-pq/releases/tag/v1.0.4),
+and [SecurityOps Brazil](https://git.securityops.com.br/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.4).
 Bundles cover x86_64 GNU/Linux and FreeBSD 14.4 amd64. The FreeBSD bundle
 contains the three tools with PKCS#11 enabled in `qgateway`; its build evidence
 is in `native-build-metadata.json` and its checksums are in `SHA256SUMS.freebsd`.

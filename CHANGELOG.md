@@ -15,17 +15,21 @@ new suite identifier.
 
 ---
 
-## [Unreleased]
+## [1.0.4] — 2026-09-06
 
 ### Fixed
 
+- **Rotation monitor shutdown.** Retain the shutdown notification across timer
+  polls and rotation work so a simultaneous notification cannot be lost.
+  Hosted release tests exposed the race; regression checks cover notification
+  delivery and bound monitor cleanup.
 - **Guix compiler selection.** Use the supported full Rust package so doctests
   have `rustdoc`. The unchanged v1.0.3 source passed 278 tests on Guix Rust
   1.93.0 (one hardware test ignored); the canonical release pin remains 1.95.0.
 - **Native package recipes.** Include the source archive and honor debug builds
   in FreeBSD; use Alpine's required indentation and serialize timing-sensitive
   tests; align Arch runtime dependencies and Cargo settings with native checks.
-- **FreeBSD download guidance.** Link the signed native v1.0.3 supplement and
+- **FreeBSD download guidance.** Link the signed native v1.0.4 supplement and
   document its separate checksums, compiler evidence, and verification commands.
 
 ## [1.0.3] — 2026-09-06

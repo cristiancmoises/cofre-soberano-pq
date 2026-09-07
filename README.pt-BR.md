@@ -1593,9 +1593,9 @@ Chaves de software são exclusivas do modo de desenvolvimento.
 
 ## Empacotamento para distribuições
 
-A release assinada v1.0.3 está disponível no [GitHub](https://github.com/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.3),
-[Codeberg](https://codeberg.org/berkeley/cofre-soberano-pq/releases/tag/v1.0.3)
-e [SecurityOps Brasil](https://git.securityops.com.br/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.3).
+A release assinada v1.0.4 está disponível no [GitHub](https://github.com/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.4),
+[Codeberg](https://codeberg.org/berkeley/cofre-soberano-pq/releases/tag/v1.0.4)
+e [SecurityOps Brasil](https://git.securityops.com.br/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.4).
 Há bundles para GNU/Linux x86_64 e FreeBSD 14.4 amd64. O bundle FreeBSD
 contém as três ferramentas, com PKCS#11 habilitado no `qgateway`; as evidências
 do build estão em `native-build-metadata.json` e os checksums em `SHA256SUMS.freebsd`.

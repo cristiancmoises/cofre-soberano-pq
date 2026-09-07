@@ -15,10 +15,14 @@ novo identificador de suite.
 
 ---
 
-## [Não lançado]
+## [1.0.4] — 2026-09-06
 
 ### Corrigido
 
+- **Encerramento do monitor de rotação.** Preserva a notificação de encerramento
+  entre ciclos do timer e operações de rotação, evitando a perda de um sinal
+  simultâneo. Os testes de release na CI revelaram a condição de corrida;
+  regressões verificam a entrega do sinal e limitam a espera pelo monitor.
 - **Seleção do compilador Guix.** Usa o pacote Rust completo suportado para
   disponibilizar `rustdoc` aos doctests. O código original da v1.0.3 passou em
   278 testes com Rust 1.93.0 do Guix (um teste de hardware ignorado); o pin
@@ -28,7 +32,7 @@ novo identificador de suite.
   sensíveis ao tempo; ajusta dependências e opções Cargo do Arch conforme a
   validação nativa.
 - **Orientações para download FreeBSD.** Inclui links para o complemento
-  nativo assinado v1.0.3, seus checksums próprios, evidências do compilador
+  nativo assinado v1.0.4, seus checksums próprios, evidências do compilador
   e comandos de verificação.
 
 ## [1.0.3] — 2026-09-06

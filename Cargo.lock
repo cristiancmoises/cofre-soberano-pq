@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "qaudit"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "qaudit-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "blake3",
  "chrono",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "qaudit-hsm"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "ciborium",
  "cryptoki",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "qaudit-portal"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "qgateway"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "qgateway-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "qtransport-cspq"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "blake3",
  "bytes",

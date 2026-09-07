@@ -124,7 +124,7 @@ cosign verify-blob --key "$COFRE_KEYS/release-sigstore-public.pem" \
 sha256sum -c SHA256SUMS
 ```
 
-The v1.0.3 FreeBSD supplement targets FreeBSD 14.4 amd64 and contains
+The v1.0.4 FreeBSD supplement targets FreeBSD 14.4 amd64 and contains
 `qaudit`, `qaudit-portal`, and `qgateway` with PKCS#11 enabled. Verify
 `SHA256SUMS.freebsd` and the FreeBSD archive using the same two signature
 commands above, setting `COFRE_ASSET` to each filename. On FreeBSD, check the
@@ -135,8 +135,8 @@ read -r COFRE_EXPECTED COFRE_ARCHIVE < SHA256SUMS.freebsd
 sha256 -c "$COFRE_EXPECTED" "$COFRE_ARCHIVE"
 ```
 
-Its embedded
-`native-build-metadata.json` records Rust 1.97.1 and 278 passing native tests;
+Its embedded `native-build-metadata.json` records the native compiler, build
+features, and validation results;
 the original release manifest and SBOM describe the GNU/Linux build. The
 FreeBSD bundle omits systemd files; the service installation steps below
 apply to GNU/Linux.

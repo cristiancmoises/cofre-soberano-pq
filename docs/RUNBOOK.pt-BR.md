@@ -125,7 +125,7 @@ cosign verify-blob --key "$COFRE_KEYS/release-sigstore-public.pem" \
 sha256sum -c SHA256SUMS
 ```
 
-O complemento v1.0.3 para FreeBSD 14.4 amd64 contém `qaudit`, `qaudit-portal`
+O complemento v1.0.4 para FreeBSD 14.4 amd64 contém `qaudit`, `qaudit-portal`
 e `qgateway` com PKCS#11 habilitado. Verifique `SHA256SUMS.freebsd` e o arquivo
 FreeBSD com os mesmos dois comandos de assinatura acima, ajustando
 `COFRE_ASSET` para cada nome. No FreeBSD, confira o digest com o
@@ -136,8 +136,8 @@ read -r COFRE_EXPECTED COFRE_ARCHIVE < SHA256SUMS.freebsd
 sha256 -c "$COFRE_EXPECTED" "$COFRE_ARCHIVE"
 ```
 
-O `native-build-metadata.json` incluído registra
-Rust 1.97.1 e 278 testes nativos aprovados; o manifesto e o SBOM originais
+O `native-build-metadata.json` incluído registra o compilador nativo, as
+features do build e os resultados da validação; o manifesto e o SBOM originais
 descrevem o build GNU/Linux. O bundle FreeBSD não inclui arquivos systemd;
 os passos de instalação do serviço abaixo se aplicam ao GNU/Linux.
 

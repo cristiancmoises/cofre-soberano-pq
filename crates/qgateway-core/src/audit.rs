@@ -491,9 +491,9 @@ impl RotationMonitor {
     }
 
     /// Spawn the monitor onto the current tokio runtime. Returns the join
-    /// handle; the monitor runs until the rotation channel is closed (which
-    /// happens when the `AuditChannel` is dropped) or until the task is
-    /// aborted.
+    /// handle; the monitor runs until shutdown is broadcast or the task is
+    /// aborted. Shutdown broadcasts are observed from the time this method
+    /// is called, including before the spawned task is first polled.
     pub fn spawn(self, shutdown: Arc<tokio::sync::Notify>) -> tokio::task::JoinHandle<()> {
         let Self {
             tenant_name,
@@ -503,6 +503,10 @@ impl RotationMonitor {
             counter,
             poll_interval,
         } = self;
+        // Register before spawning, then retain the same notification across
+        // timer iterations. Recreating it in select! can lose a broadcast
+        // received before the first poll or while handling a ready timer.
+        let shutdown = shutdown.notified_owned();
         tokio::spawn(async move {
             // If the policy has no auto-trigger, do nothing — the monitor
             // exists only to honor SIGUSR2 (which goes through a separate
@@ -510,9 +514,10 @@ impl RotationMonitor {
             if !policy.has_auto_trigger() {
                 return;
             }
+            tokio::pin!(shutdown);
             loop {
                 tokio::select! {
-                    _ = shutdown.notified() => return,
+                    _ = &mut shutdown => return,
                     _ = tokio::time::sleep(poll_interval) => {
                         let fired = check_thresholds(
                             &policy,
@@ -1066,9 +1071,14 @@ mod tests {
         );
 
         shutdown.notify_waiters();
-        let _ = mon_handle.await;
+        tokio::time::timeout(Duration::from_secs(5), mon_handle)
+            .await
+            .expect("monitor must exit after rotation shutdown")
+            .expect("monitor task panicked");
         drop(h);
-        ch.shutdown().await;
+        tokio::time::timeout(Duration::from_secs(5), ch.shutdown())
+            .await
+            .expect("audit writer must exit after monitor shutdown");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1112,7 +1122,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn monitor_respects_shutdown_signal() {
+    async fn monitor_respects_shutdown_before_first_poll() {
         let tmp = TempDir::new().unwrap();
         let log_path = tmp.path().join("audit.qa");
 
@@ -1144,20 +1154,64 @@ mod tests {
                 .with_poll_interval(Duration::from_millis(50));
         let mon_handle = monitor.spawn(shutdown.clone());
 
-        // Let the monitor enter the select loop and register its waker on
-        // the Notify before we signal it. Without this yield, notify_waiters
-        // races against the spawn and may signal before any future is
-        // listening — Notify is not sticky.
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
-        // Signal shutdown; monitor must exit promptly.
+        // This current-thread runtime cannot poll the spawned monitor until
+        // we yield. A shutdown broadcast immediately after spawn must still
+        // be observed, without a readiness sleep or a second notification.
         shutdown.notify_waiters();
         tokio::time::timeout(Duration::from_secs(1), mon_handle)
             .await
             .expect("monitor must exit on shutdown")
             .expect("monitor task panicked");
         ch.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn monitor_respects_shutdown_during_rotation_request() {
+        // Sending a rotation wakes its receiver synchronously. Broadcast
+        // shutdown from that wakeup, while the monitor is handling its timer
+        // branch, so the race does not depend on scheduler timing.
+        struct ShutdownOnWake(Arc<tokio::sync::Notify>);
+        impl std::task::Wake for ShutdownOnWake {
+            fn wake(self: Arc<Self>) {
+                self.0.notify_waiters();
+            }
+        }
+
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let (rotation_tx, mut rotation_rx) = mpsc::channel(1);
+        let waker = std::task::Waker::from(Arc::new(ShutdownOnWake(shutdown.clone())));
+        let mut next_rotation = Box::pin(rotation_rx.recv());
+        assert!(std::future::Future::poll(
+            next_rotation.as_mut(),
+            &mut std::task::Context::from_waker(&waker),
+        )
+        .is_pending());
+
+        let rotation_handle = RotationHandle {
+            rotation_tx,
+            entries_since_rotation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            segment_open_unix: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        };
+        let policy = RotationPolicy {
+            max_entries: Some(1),
+            max_bytes: None,
+            max_age_secs: None,
+            poll_interval_ms: None,
+            archive_pattern: "{counter}.qa".to_string(),
+        };
+        let monitor = crate::RotationMonitor::new(
+            "shutdown-during-rotation",
+            rotation_handle,
+            PathBuf::from("unused.qa"),
+            policy,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .with_poll_interval(Duration::from_millis(1));
+        tokio::time::timeout(Duration::from_secs(1), monitor.spawn(shutdown))
+            .await
+            .expect("monitor must retain shutdown sent during a rotation request")
+            .expect("monitor task panicked");
+        assert!(next_rotation.await.is_some());
     }
 
     // ====================================================================
