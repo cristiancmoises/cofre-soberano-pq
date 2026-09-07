@@ -12,9 +12,9 @@ about 30 minutes of attention. There is nothing site-specific in this
 procedure — pick any two hosts, pick any non-reserved TCP port, follow
 the steps.
 
-If this test passes in your environment, your deployment carries the
-same cryptographic guarantees as the reference run documented in
-`#observed-results` at the bottom.
+This test exercises transport and audit behavior in the selected
+configuration. It is not an independent cryptographic audit or production
+certification.
 
 ---
 
@@ -67,8 +67,8 @@ sudo install -m 0755 target/release/qgateway      /usr/local/bin/
 sudo install -m 0755 target/release/qaudit        /usr/local/bin/
 sudo install -m 0755 target/release/qaudit-portal /usr/local/bin/
 
-# Confirm
-qgateway --version    # qgateway 1.0.1
+# Confirm: all three commands must report the same selected release version.
+qgateway --version
 qaudit --version
 qaudit-portal --version
 ```
@@ -418,14 +418,23 @@ qaudit-portal --log /var/log/qgateway/alice.qa --listen 127.0.0.1:8123
 
 Open `http://127.0.0.1:8123`. You should see:
 
-- Header bar: `20 entries · ✓ verified`
+- A signed-entry count of 20 and the badge `✓ Signatures verified`
 - Table alternating `session.open` and `session.close` rows
 - Per-row: timestamp, actor `svc:qgateway`, action, resource
   (`cspq://<session-id>`), metadata (duration, byte counts, peer port),
-  and the rolling root hash truncated to 16 bytes
+  and the rolling root hash shown as an 8-byte prefix
 
-If the header reports anything other than `✓ verified`, the chain is
-corrupted — see `#known-edge-cases`.
+If verification fails, preserve the input and inspect `/api/verify` before
+using the result as evidence. A verified badge checks available signatures;
+it does not establish completeness, trusted time, or key provenance.
+
+The portal displays the file loaded at startup. Restart it to load new
+entries; the API shares that snapshot. Use `?lang=pt-BR` for Portuguese and
+`?offset=0&limit=50` for pagination. Header labels/times and `appended_at`
+are not authenticated in wire-v1. Preserve external checkpoints to detect
+removal of complete trailing entries.
+
+![English audit portal](../screenshots/portal-en.png)
 
 ### Optional — verify with an externally-published audit pubkey
 
@@ -459,7 +468,7 @@ scp /etc/qgateway/server.audit.pub $USER@$CLIENT_IP:/tmp/server-real.pub
 
 On `CLIENT`, **without** establishing any new connection to `SERVER`:
 ```bash
-qaudit verify --log /tmp/server-real.qa
+qaudit verify --log /tmp/server-real.qa --pk /tmp/server-real.pub
 qaudit inspect --log /tmp/server-real.qa | head
 ```
 
@@ -576,5 +585,7 @@ Honest disclosure:
   the `crates/qtransport-cspq/tests/` integration suite, not by this
   procedure.
 
-Run the full `cargo test --workspace --release --locked` suite (227+
-tests) for coverage of the above.
+Run the full `cargo test --workspace --release --locked --no-fail-fast`
+suite for coverage of the above. Test totals change as coverage grows; use the
+command's result as the release gate rather than a number copied into this
+document.

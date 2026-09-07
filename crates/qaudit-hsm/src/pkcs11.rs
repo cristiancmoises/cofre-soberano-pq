@@ -4,22 +4,15 @@
 //! a chosen slot, authenticates with a PIN, looks up an ML-DSA private key by
 //! its `CKA_LABEL`, and produces signatures via `C_Sign`.
 //!
-//! ## Production HSMs known to work
+//! ## Deployment requirements
 //!
-//! - **Dinamo** (Brazil): HSM HBNet, HSM CKM-IS — vendor ML-DSA mechanism.
-//! - **Entrust nShield** (post-quantum firmware ≥ 13.6.x).
-//! - **Thales Luna 7** (with PQC capability key + 2025 firmware).
-//! - **YubiHSM 2**: classical only today. PQ support announced for hardware revision 2.
-//! - **SoftHSM 2** (testing only): classical mechanisms only; useful for
-//!   exercising the substrate but cannot host a real ML-DSA key.
-//!
-//! ## ML-DSA mechanism OID
-//!
-//! PKCS#11 v3.2 (draft) defines `CKM_ML_DSA` and related mechanisms. Until
-//! that ships and HSM vendors implement it, ML-DSA-87 signing uses
-//! vendor-defined mechanism identifiers in the range `CKM_VENDOR_DEFINED + N`.
-//! [`Pkcs11Config::mechanism_id`] is a `u64` exactly so deployments can
-//! configure the right value for their HSM (see vendor docs).
+//! A PKCS#11 driver alone does not establish ML-DSA support. This backend
+//! requires a mechanism that signs with ML-DSA-87 using the QAudit context,
+//! and a public-key object exposing raw ML-DSA-87 bytes in CKA_VALUE.
+//! Configure the vendor-defined mechanism using the vendor's documentation,
+//! then run the ignored live sign/verify test against the actual hardware.
+//! No vendor/firmware compatibility is certified by this repository.
+//! Returned signatures are verified locally before they reach the audit log.
 //!
 //! ## Threat model
 //!
@@ -29,13 +22,13 @@
 //!   an [`AuthPin`] (itself a zeroizing secret) for the `C_Login` call, then
 //!   every transient copy is wiped; the signer does not retain the PIN. Note
 //!   the PIN you place in [`Pkcs11Config::user_pin`] is a plain `String` and is
-//!   only wiped when that config value is dropped — keep the config short-lived.
+//!   wiped when that config value is dropped — keep the config short-lived.
 //! - The PKCS#11 driver itself is a trusted component; sign your driver
 //!   binaries and verify on load.
 
 use qaudit_core::{Error as CoreError, PublicKey, Result as CoreResult, Signature, Signer};
 
-use cryptoki::context::{CInitializeArgs, Pkcs11};
+use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::vendor_defined::{VendorDefinedMechanism, CKM_VENDOR_DEFINED};
 use cryptoki::mechanism::{Mechanism, MechanismType};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass, ObjectHandle};
@@ -47,7 +40,7 @@ use std::sync::Mutex;
 use zeroize::Zeroizing;
 
 /// Configuration for [`Pkcs11Signer`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Pkcs11Config {
     /// Path to the PKCS#11 v3 driver (e.g. `/usr/lib/softhsm/libsofthsm2.so`,
     /// `/opt/dinamo/lib/libdinamo.so`, `/opt/yubihsm-pkcs11/yubihsm_pkcs11.so`).
@@ -71,6 +64,29 @@ pub struct Pkcs11Config {
     /// Provenance string emitted into structured logs.
     /// Defaults to `"pkcs11:{module_basename}:{slot_index}:{key_label}"`.
     pub provenance: Option<String>,
+}
+
+impl std::fmt::Debug for Pkcs11Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pkcs11Config")
+            .field("module_path", &self.module_path)
+            .field("slot_index", &self.slot_index)
+            .field("user_pin", &self.user_pin.as_ref().map(|_| "[REDACTED]"))
+            .field("key_label", &self.key_label)
+            .field("pubkey_label", &self.pubkey_label)
+            .field("mechanism_id", &self.mechanism_id)
+            .field("provenance", &self.provenance)
+            .finish()
+    }
+}
+
+impl Drop for Pkcs11Config {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Some(pin) = self.user_pin.as_mut() {
+            pin.zeroize();
+        }
+    }
 }
 
 impl Pkcs11Config {
@@ -97,6 +113,10 @@ impl Pkcs11Config {
     /// then wiping every transient copy); the signer never retains it.
     #[must_use]
     pub fn with_pin(mut self, pin: impl Into<String>) -> Self {
+        use zeroize::Zeroize;
+        if let Some(previous) = self.user_pin.as_mut() {
+            previous.zeroize();
+        }
         self.user_pin = Some(pin.into());
         self
     }
@@ -181,7 +201,7 @@ impl Pkcs11Signer {
                 e
             ))
         })?;
-        ctx.initialize(CInitializeArgs::OsThreads)
+        ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
             .map_err(|e| CoreError::Internal(format!("PKCS#11 C_Initialize: {e}")))?;
 
         let slots = ctx
@@ -205,7 +225,7 @@ impl Pkcs11Signer {
             // transient copies are wiped when this scope ends.
             let pin = Zeroizing::new(pin.clone());
             session
-                .login(UserType::User, Some(&AuthPin::new(pin.to_string())))
+                .login(UserType::User, Some(&AuthPin::new(pin.to_string().into())))
                 .map_err(|e| CoreError::Internal(format!("PKCS#11 Login: {e}")))?;
         }
 
@@ -214,7 +234,7 @@ impl Pkcs11Signer {
 
         let public_key = read_public_key(&session, pubkey_handle)?;
 
-        let provenance = config.provenance.unwrap_or_else(|| {
+        let provenance = config.provenance.clone().unwrap_or_else(|| {
             format!(
                 "pkcs11:{}:slot{}:{}",
                 module_basename, config.slot_index, config.key_label
@@ -292,7 +312,11 @@ impl Pkcs11Signer {
         let sig_bytes = session
             .sign(&mech, self.privkey_handle, message)
             .map_err(|e| CoreError::Internal(format!("PKCS#11 C_Sign: {e}")))?;
-        Signature::from_bytes(&sig_bytes)
+        let signature = Signature::from_bytes(&sig_bytes)?;
+        // Reject wrong key, context, or mechanism output before the audit
+        // writer can commit an entry signed by a misconfigured token.
+        qaudit_core::verify_signature(&self.public_key, message, &signature, 0)?;
+        Ok(signature)
     }
 }
 
@@ -314,12 +338,16 @@ fn find_key_by_label(session: &Session, label: &str, private: bool) -> CoreResul
     let handles = session
         .find_objects(&template)
         .map_err(|e| CoreError::Internal(format!("PKCS#11 FindObjects: {e}")))?;
-    handles.into_iter().next().ok_or_else(|| {
-        let kind = if private { "private" } else { "public" };
-        CoreError::Internal(format!(
-            "PKCS#11: no {kind}-key object found with label '{label}'"
-        ))
-    })
+    match handles.as_slice() {
+        [handle] => Ok(*handle),
+        _ => {
+            let kind = if private { "private" } else { "public" };
+            Err(CoreError::Internal(format!(
+                "PKCS#11: expected exactly one {kind}-key object with label '{label}', found {}",
+                handles.len()
+            )))
+        }
+    }
 }
 
 fn read_public_key(session: &Session, handle: ObjectHandle) -> CoreResult<PublicKey> {
@@ -386,6 +414,15 @@ impl Pkcs11SignerFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_does_not_disclose_pin() {
+        let cfg =
+            Pkcs11Config::new("/test/module.so", 0, "audit").with_pin("sensitive-hsm-pin-unique");
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("sensitive-hsm-pin-unique"));
+        assert!(debug.contains("[REDACTED]"));
+    }
 
     #[test]
     fn config_builder_pattern() {

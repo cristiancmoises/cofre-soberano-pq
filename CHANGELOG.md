@@ -15,6 +15,97 @@ new suite identifier.
 
 ---
 
+## [1.0.3] — 2026-09-06
+
+Security, release-integrity, and bilingual usability update. The wire protocol,
+`.qa` encoding, and cryptographic suite remain unchanged (`cspq-2026`).
+Malformed logs, abrupt unauthenticated EOF, ambiguous keys, and unsafe file
+operations are now rejected more strictly.
+
+### Added
+
+- **Bilingual auditor portal.** English and pt-BR views, bounded pagination,
+  responsive layout, explicit snapshot/trust status, and security response
+  headers. Genuine screenshots use synthetic data only.
+- **Distribution packaging.** Local Guix and Nix recipes and release-specific
+  package generation tooling. Inclusion in downstream distributions remains
+  subject to each project's review and native build validation.
+- **Release public keys.** Tracked ML-DSA-87 and Sigstore public keys; private
+  signing material stays outside the repository. Cosign 3.1.3 signing uses its
+  supported default signing configuration and verifiable bundles.
+- **Canonical CI gates.** `.github/workflows/ci.yml` now targets the real
+  `master` branch and delegates formatting, clippy, default/release tests,
+  PKCS#11 builds, locked release builds, and dependency auditing to
+  `scripts/ci.sh`. Both local and hosted validation enforce the exact Rust
+  `1.95.0` toolchain declared by `rust-toolchain.toml`.
+- **Deterministic release packaging.** `scripts/release.sh` builds all three
+  executables (`qaudit`, `qaudit-portal`, and `qgateway`) plus the
+  `qgateway-pkcs11` variant, deterministic source and Linux binary archives,
+  a CycloneDX 1.5 SBOM, `release-manifest.json`, and `SHA256SUMS`. Candidate
+  output is explicitly non-publishable; final mode additionally requires a
+  clean annotated version tag and verified ML-DSA-87 and Sigstore signatures.
+  SBOM references are normalized so temporary build paths do not leak into
+  published metadata. The script never generates or persists signing keys.
+- **Tracked systemd service.** `systemd/qgateway.service` supplies the
+  hardening and signal contract previously shown only as a runbook example.
+
+### Fixed
+
+- **Audit persistence and signing failures.** Reject partial CBOR entries and
+  invalid headers; verify history before reopening it with a signer. Signing
+  failures preserve Merkle state, and log saves use atomic same-directory
+  replacement with synchronization instead of truncating the live file. Audit
+  rotation keeps the original live state on signing or filesystem failure and
+  refuses to overwrite an existing archive. A failed live-file replacement can
+  leave a completed archive for operator reconciliation.
+- **Transport truncation and stream splitting.** Require the authenticated EOF
+  marker and retain buffered plaintext, pending ciphertext, and EOF state when
+  splitting streams. Abrupt disconnections no longer become clean sessions.
+- **Key and output handling.** Refuse aliased paths and symlinks, avoid
+  overwriting gateway keys, validate keypair correspondence and exact key-file
+  lengths, and preserve private permissions during CLI replacement.
+- **HSM failure handling.** Redact PINs in Debug output, zeroize configuration
+  PINs on replacement/drop, reject duplicate token key labels, and verify every
+  hardware-produced signature locally before returning it to the audit writer.
+- **Dependency audit.** Upgrade quick-xml to 0.41 and anyhow to 1.0.104,
+  migrate PEM decoding to rustls-pki-types, and upgrade cryptoki to 0.12.
+  Remove unmaintained paste/rustls-pemfile and unused AWS-LC dependencies by
+  explicitly selecting the ring provider for tokio-rustls. Malformed TLS key
+  input now fails validation instead of being accepted as a parser result.
+
+- **The qaudit container now builds from the real workspace.** The Dockerfile
+  copies every workspace member before Cargo resolution, no longer describes
+  its glibc binary as musl, removes the stale `0.1.0` example, and carries
+  version/revision/build-date plus accurate dual-license image metadata. A
+  minimal Docker context excludes runtime data and keys, and the runtime image
+  includes the license notices.
+- **Release and operator documentation now matches the repository.** English
+  and pt-BR documents agree on Rust `1.95.0`, generated key names, current
+  per-tenant signer support, `qgateway validate`, the tracked service path,
+  bundle contents, SBOM/signature verification, and which supply-chain items
+  are implemented versus deferred. Stale sprint, project-tree, version, test
+  count, and QVault-status claims were removed or corrected.
+
+### Changed
+
+- **Dual-license scope is precise.** The AGPL option remains complete and
+  unmodified; `LICENSE-COMMERCIAL` is explicitly an inquiry/scope notice, not
+  a license grant. `NOTICE` identifies first-party scope and preserves every
+  dependency's own license. Cargo and container metadata use the corresponding
+  SPDX expression without implying commercial rights that have not been
+  separately signed.
+
+### Wire / format compatibility
+
+Valid `1.0.2` and `1.0.3` logs and transport records retain the same encoding.
+The stricter rejection behavior above is intentional. Complete trailing-entry
+removal still requires a trusted external count/root checkpoint to detect;
+header labels and append timestamps are not authenticated by the v1 signature.
+This maintenance review is not an independent cryptographic certification.
+Live ML-DSA HSM verification requires actual supported hardware.
+
+---
+
 ## [1.0.2] — 2026-07-15
 
 Documentation-accuracy and HSM-hardening release. **No wire-protocol,

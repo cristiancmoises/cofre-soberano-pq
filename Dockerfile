@@ -2,41 +2,46 @@
 #
 # Cofre Soberano PQ — qaudit CLI container.
 #
-# Two-stage build: a builder layer with the full Rust toolchain, and a
-# minimal distroless runtime carrying only the static-ish musl binary.
+# The complete workspace is copied because Cargo must resolve every workspace
+# member even when only qaudit is selected. The runtime is a minimal Debian 12
+# distroless image carrying the dynamically linked glibc binary.
 #
-# Build:    docker build -t securityops/qaudit:0.1.0 .
-# Run:      docker run --rm -v "$PWD":/data securityops/qaudit:0.1.0 verify --log /data/audit.qa
+# Build:    docker build -t cofre-soberano-pq/qaudit:local .
+# Run:      docker run --rm -v "$PWD":/data cofre-soberano-pq/qaudit:local verify --log /data/audit.qa
 
-FROM rust:1.95-slim-bookworm AS builder
+FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS builder
 
 WORKDIR /src
 
-# Cache deps first.
-COPY Cargo.toml Cargo.lock ./
-COPY crates/qaudit-core/Cargo.toml crates/qaudit-core/Cargo.toml
-COPY crates/qaudit/Cargo.toml      crates/qaudit/Cargo.toml
-RUN mkdir -p crates/qaudit-core/src crates/qaudit/src \
-    && echo 'fn main(){}'           > crates/qaudit/src/main.rs \
-    && echo 'pub fn _stub(){}'      > crates/qaudit-core/src/lib.rs \
-    && cargo build --release --locked -p qaudit \
-    && rm -rf crates/qaudit-core/src crates/qaudit/src
-
-# Real build.
+# Cargo resolves the full workspace before selecting -p qaudit, so retain every
+# member manifest and source tree. BuildKit cache mounts keep repeat builds fast
+# without maintaining fragile placeholder crates.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-RUN cargo build --release --locked -p qaudit \
-    && strip target/release/qaudit
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release --locked -p qaudit \
+    && install -m 0755 target/release/qaudit /usr/local/bin/qaudit
 
-# Distroless: only glibc + the binary. No shell, no package manager.
+# Distroless contains glibc and the runtime libraries required by the builder's
+# Debian target. It has no shell or package manager.
 FROM gcr.io/distroless/cc-debian12:nonroot
+
+ARG VERSION
+ARG VCS_REF
+ARG CREATED
 
 LABEL org.opencontainers.image.title="qaudit"
 LABEL org.opencontainers.image.description="Post-quantum signed audit log (Cofre Soberano PQ)"
-LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later OR LicenseRef-Cofre-Soberano-PQ-Commercial"
 LABEL org.opencontainers.image.source="https://git.securityops.co/cristiancmoises/cofre-soberano-pq"
 LABEL org.opencontainers.image.vendor="Security Ops"
+LABEL org.opencontainers.image.version="$VERSION"
+LABEL org.opencontainers.image.revision="$VCS_REF"
+LABEL org.opencontainers.image.created="$CREATED"
 
-COPY --from=builder /src/target/release/qaudit /usr/local/bin/qaudit
+COPY --from=builder --chmod=0755 /usr/local/bin/qaudit /usr/local/bin/qaudit
+COPY --chmod=0644 LICENSE-AGPL LICENSE-COMMERCIAL NOTICE /usr/share/licenses/qaudit/
 
 USER nonroot
 WORKDIR /data

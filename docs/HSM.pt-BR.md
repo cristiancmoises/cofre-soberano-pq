@@ -24,14 +24,16 @@ obtiver a chave de assinatura de auditoria, ele pode:
 - Convencer um regulador de que o gateway registrou uma sequência de
   eventos que na verdade nunca ocorreu
 
-Colocar a chave em um HSM significa:
+Com um HSM configurado corretamente e validado de forma independente, as
+propriedades pretendidas são:
 
 - Mesmo com acesso root total ao host do gateway, o atacante não
   consegue exfiltrar os bytes da chave
-- Toda operação de assinatura deixa uma trilha de auditoria no próprio
-  HSM (independente da cadeia que está assinando)
-- Auditores de conformidade obtêm uma atestação de hardware de que a
-  chave de assinatura está restrita à fronteira certificada do HSM
+- Registros do próprio HSM podem fornecer uma trilha independente quando o
+  dispositivo e a política escolhidos habilitam esse recurso
+- Evidências de certificação e atestação vêm do fornecedor do HSM e do
+  processo de provisionamento do operador; o qgateway não gera atestação de
+  hardware
 
 O trade-off: uma chamada de assinatura agora exige uma ida e volta ao
 HSM (tipicamente pela rede — mesmo HSMs PCIe locais serializam por meio
@@ -45,22 +47,27 @@ de latência, mas implantações de alto throughput devem fazer benchmark.
 
 O Cofre Soberano PQ depende de `qaudit-hsm` (crate do workspace) com a
 feature `pkcs11`. A implementação é genérica entre fornecedores que
-suportam ML-DSA-87 por meio de um mecanismo PKCS#11 definido pelo
-fornecedor — este é o estado do padrão na v1.0.
+disponibilizam uma chave ML-DSA-87 e um mecanismo aceito pela implementação.
+O ID precisa ser validado para o módulo, firmware e driver escolhidos.
 
-Testado:
+Situação de compatibilidade:
 
 | HSM | Status | Notas |
 |---|---|---|
-| **SoftHSM2** | ✅ Testado em lib | Usado pela CI do qaudit-hsm. ML-DSA-87 emulado em software; não certificado. Útil para dev + CI. |
-| **YubiHSM2** (firmware 2.4+) | 🟡 Não testado | Suporte a ML-DSA anunciado; verificação prevista para o Sprint 36+ quando o hardware estiver disponível. |
-| **Thales Luna** | 🟡 Não testado | Dependente de firmware; consulte o fornecedor sobre a disponibilidade do mecanismo ML-DSA. |
-| **Utimaco SecurityServer** | 🟡 Não testado | Mesma ressalva. |
+| **SoftHSM2** | 🟡 Apenas compilação/teste unitário | Útil para exercitar código PKCS#11 genérico, mas não hospeda a chave ML-DSA-87 exigida pelo teste ao vivo. |
+| **YubiHSM2** | 🟡 Não testado ao vivo | Confirme suporte ao mecanismo ML-DSA-87 no hardware, firmware e driver exatos. |
+| **Thales Luna** | 🟡 Não testado ao vivo | Depende de firmware e capabilities; confirme o mecanismo com o fornecedor. |
+| **Utimaco SecurityServer** | 🟡 Não testado ao vivo | Depende de firmware e capabilities; confirme o mecanismo com o fornecedor. |
 
-O mecanismo ML-DSA do padrão PKCS#11 está em fluxo em 2026. Fornecedores
-entregam sob diferentes IDs de mecanismo (tipicamente
-`CKM_VENDOR_DEFINED + N`). O campo de configuração `mechanism_id`
-permite que operadores fixem o ID exato que seu HSM usa sem recompilar.
+A CI compila e testa unitariamente o caminho opcional `pkcs11`. O teste
+`qaudit-hsm::pkcs11::tests::live_hsm_sign_verify` é ignorado por padrão porque
+exige um dispositivo ML-DSA-87 provisionado. Execute esse round trip contra o
+módulo exato de produção antes da implantação; um build bem-sucedido não prova
+interoperabilidade com o HSM.
+
+O adaptador usa por padrão `0x8000_0001`, um mecanismo definido pelo
+fornecedor. Configure `mechanism_id` com o valor documentado para o seu
+módulo. A existência de um ID não comprova suporte a ML-DSA-87.
 
 Se o seu HSM ainda não expõe ML-DSA-87 na camada PKCS#11, o fallback de
 softkey é honesto: entregue com chaves baseadas em arquivo com
@@ -79,43 +86,38 @@ não importado. Importar anula o propósito da custódia em HSM (a chave
 secreta transitou por um host onde poderia ter sido registrada ou
 copiada em backup).
 
-Comandos específicos do fornecedor; exemplo com SoftHSM2 (apenas para
-desenvolvimento — não para produção):
+O provisionamento e a exportação da chave pública são específicos do
+fornecedor. Este repositório não fornece um binário de provisionamento
+`qaudit-hsm-tool`. Use as ferramentas ou o SDK documentados pelo fornecedor
+para:
+
+1. gerar o par privado/público ML-DSA-87 dentro do dispositivo;
+2. definir os valores `CKA_LABEL` usados por `key_label` e `pub_label`;
+3. exportar somente a chave pública como os 2592 bytes brutos de ML-DSA-87 (ou
+   na forma com frame `AUDITPK0` aceita pelas ferramentas QAudit); e
+4. registrar módulo, firmware, ID do mecanismo e hash da chave pública nas
+   evidências da implantação.
+
+Por exemplo, a inicialização do token pode começar com um comando do
+fornecedor como o seguinte, mas ele não provisiona uma chave ML-DSA por si só:
 
 ```bash
 # Initialize a SoftHSM2 token
 softhsm2-util --init-token --slot 0 --label "qgateway-audit" \
     --so-pin 1234 --pin 5678
-
-# Generate the ML-DSA-87 keypair via the vendor's tooling.
-# SoftHSM2 doesn't natively support ML-DSA at the CLI as of writing;
-# use the qaudit-hsm-tool helper (shipped in v1.1+) or vendor SDK.
-qaudit-hsm-tool keygen-on-hsm \
-    --module /usr/lib/softhsm/libsofthsm2.so \
-    --slot 0 \
-    --pin 5678 \
-    --label "audit-2026"
 ```
 
-Após o provisionamento, exporte o blob da chave pública para
-distribuição aos auditores:
-
-```bash
-qaudit-hsm-tool export-pubkey \
-    --module /usr/lib/softhsm/libsofthsm2.so \
-    --slot 0 \
-    --pin-env QGATEWAY_HSM_PIN \
-    --label "audit-2026" \
-    --out /etc/qgateway/audit.pub
-```
-
-O `.audit.pub` exportado tem o mesmo formato de arquivo que o
-`.audit.pub` do caminho softkey — auditores verificam da mesma forma
-independentemente de o assinador ter sido softkey ou HSM.
+O SoftHSM2 não fornece o caminho ML-DSA-87 ao vivo exigido; o exemplo serve
+somente para desenvolvimento PKCS#11 genérico. Após o provisionamento
+específico do fornecedor, retenha a chave pública exportada como
+`/etc/qgateway/audit.pub` para distribuição aos auditores. O QAudit aceita os
+bytes públicos ML-DSA-87 brutos ou a forma `.audit.pub` com frame, portanto a
+verificação independe da custódia do assinador.
 
 ### 3.2 Configuração do daemon
 
-`/etc/qgateway/sidecar.toml`, substituindo o bloco `[audit_signer]`:
+Em `/etc/qgateway/sidecar.toml`, substitua o padrão global `[audit_signer]` ou
+use `[tenants.audit_signer]` para uma identidade HSM específica do tenant:
 
 ```toml
 [audit_signer]
@@ -126,8 +128,8 @@ pin_env      = "QGATEWAY_HSM_PIN"
 key_label    = "audit-2026"
 # Optional: separate label if the HSM stores pub and priv distinctly
 # pub_label  = "audit-2026-pub"
-# Optional: pin the vendor's mechanism ID (defaults to a sensible
-# value if your HSM uses a standard ID)
+# Defina o ID do mecanismo documentado pelo fornecedor.
+# O padrão 0x80000001 é específico do fornecedor, sem garantia de portabilidade.
 # mechanism_id = 0x80000123
 ```
 
@@ -266,10 +268,10 @@ Se a taxa estiver próxima da especificação do HSM, considere:
 - Agrupar múltiplos eventos de auditoria por assinatura (AINDA NÃO
   IMPLEMENTADO; trabalho do Sprint 36+)
 - Atualizar o hardware do HSM
-- Usar um assinador softkey para tenants não críticos e o HSM apenas
-  para tenants críticos de conformidade (cada tenant tem seu próprio
-  assinador de auditoria na v1.1+ — atualmente o assinador é global do
-  daemon)
+- Usar assinadores softkey específicos para tenants não críticos e HSM apenas
+  para tenants críticos de conformidade. Overrides por tenant já são
+  suportados por `[tenants.audit_signer]`; sem override, o tenant herda o
+  padrão global.
 
 ### 4.4 Rotação da chave do HSM
 
@@ -310,7 +312,8 @@ correto contra a chave correta.
   assinatura autenticadas; não consegue distinguir se a requisição veio
   do fluxo legítimo de eventos de auditoria ou de código injetado).
   Mitigação: a postura `#![forbid(unsafe_code)]` do daemon + superfície
-  mínima de dependências + builds reproduzíveis. Mas, em última análise:
+  mínima de dependências + builds de release fixados e travados. Mas, em
+  última análise:
   defesa em profundidade, não uma solução mágica.
 - **Ataque físico ao próprio HSM**. A maioria dos HSMs é certificada
   FIPS 140-2 / 140-3 Nível 3 para evidência de adulteração, mas
@@ -324,11 +327,8 @@ correto contra a chave correta.
   implementações de ML-DSA-87 ainda estão amadurecendo nesse aspecto;
   específico do fornecedor.
 
-### 5.2 Itens do roadmap (Sprint 36+ se houver demanda)
+### 5.2 Itens do roadmap (condicionados à demanda dos operadores)
 
-- Assinadores de auditoria por tenant (atualmente global do daemon;
-  planejado para implantações multi-tenant onde cada tenant tem seu
-  próprio slot de HSM)
 - Agrupamento de operações de assinatura (assinar N eventos com uma
   única ida e volta ao HSM)
 - Consciência de cluster de HSM (failover entre HSMs redundantes)

@@ -25,10 +25,8 @@ tokio           = { workspace = true }
 tracing         = { workspace = true }
 tracing-subscriber = { workspace = true }
 hex             = { workspace = true }
-# Sprint 37: TLS PEM parsing for the `validate` subcommand. Re-implements
-# minimal cert/key parse so dry-run can catch malformed TLS files without
-# depending on qgateway-core's internal rustls type signatures.
-rustls-pemfile  = { workspace = true }
+# TLS PEM parsing uses the same maintained decoder as the daemon.
+rustls          = { workspace = true }
 
 [features]
 default = []

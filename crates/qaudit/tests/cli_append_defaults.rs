@@ -224,3 +224,30 @@ fn append_honors_explicit_sk_pk_paths() {
     );
     assert_ok(&out, "append explicit");
 }
+
+#[test]
+fn append_rejects_mismatched_secret_without_modifying_log() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_qaudit"));
+    for name in ["a.qa", "b.qa"] {
+        assert!(std::process::Command::new(&binary)
+            .args(["init", "--log", name])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    let before = std::fs::read(tmp.path().join("a.qa")).unwrap();
+    let result = std::process::Command::new(&binary)
+        .args([
+            "append", "--log", "a.qa", "--sk", "b.sk", "--pk", "a.pk", "--actor", "demo",
+            "--action", "test",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("valid keypair"));
+    assert_eq!(std::fs::read(tmp.path().join("a.qa")).unwrap(), before);
+}

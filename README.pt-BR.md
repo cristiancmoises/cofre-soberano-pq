@@ -12,18 +12,37 @@ fronteira criptográfica pós-quântica para setores regulados brasileiros
 especificação completa e o roadmap; este README foca no que já está disponível
 hoje.
 
-![Primeiro teste](screenshots/first-test.png)
+## Capturas de tela
+
+As capturas abaixo foram feitas com as ferramentas v1.0.3 em execução, usando
+chaves descartáveis e eventos locais de demonstração. Elas mostram a interface;
+não comprovam implantação em produção, certificação de hardware nem auditoria externa.
+
+| Visualizador de auditoria | Verificação operacional |
+|---|---|
+| [![Portal de auditoria em português brasileiro](screenshots/portal-pt-BR.png)](screenshots/portal-pt-BR.png) | [![Verificação e rotação pelo CLI](screenshots/qaudit-cli.png)](screenshots/qaudit-cli.png) |
+| [![Portal de auditoria em inglês](screenshots/portal-en.png)](screenshots/portal-en.png) | [![Teste do gateway e métricas](screenshots/gateway-verification.png)](screenshots/gateway-verification.png) |
+
+[Visualizador em tela móvel](screenshots/portal-mobile.png) ·
+[Exemplo com assinatura inválida](screenshots/portal-invalid.png)
+
+O portal aceita `?lang=pt-BR` e `?offset=0&limit=50`; cada página HTML mostra
+até 200 entradas. Ele apresenta um **retrato da inicialização**, incluindo os
+resultados de verificação da API. Reinicie-o para carregar alterações. Use um
+`--pk` confiável para conferir a identidade do assinante e um proxy autenticado
+para acesso remoto; o portal não implementa autenticação própria.
+
 
 **Documentação voltada ao operador:**
-- [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) — implantação em produção, operações
+- [`docs/RUNBOOK.pt-BR.md`](./docs/RUNBOOK.pt-BR.md) — implantação em produção, operações
   diárias, contrato de sinais, referência de métricas, resolução de problemas,
   resposta a incidentes
-- [`docs/HSM.md`](./docs/HSM.md) — guia passo a passo de integração do
+- [`docs/HSM.pt-BR.md`](./docs/HSM.pt-BR.md) — guia passo a passo de integração do
   assinador de auditoria com suporte a PKCS#11 / HSM
-- [`docs/SMOKE_TEST.md`](./docs/SMOKE_TEST.md) — procedimento de validação de
+- [`docs/SMOKE_TEST.pt-BR.md`](./docs/SMOKE_TEST.pt-BR.md) — procedimento de validação de
   produção ponta a ponta (dois hosts, internet real, cadeia de auditoria
   verificada de forma cruzada)
-- [`CHANGELOG.md`](./CHANGELOG.md) — histórico de releases
+- [`CHANGELOG.pt-BR.md`](./CHANGELOG.pt-BR.md) — histórico de releases
 
 Se você está implantando o gateway em produção, leia o `RUNBOOK.md` primeiro.
 Se você está avaliando o produto em condições reais de rede, comece pelo
@@ -38,7 +57,7 @@ Se você está avaliando o produto em condições reais de rede, comece pelo
 | QTransport CSPQ | `qtransport-cspq` | Sprint 3 ✅ | Transporte PQ de referência: ML-KEM-1024 + ML-DSA-87 + ChaCha20-Poly1305 |
 | QGateway Core | `qgateway-core` | Sprint 3 ✅ | Configuração, métricas, canal de auditoria, substrato de proxy bidirecional |
 | QGateway   | `qgateway`       | Sprint 3 ✅ | Daemon de proxy reverso TCP↔CSPQ (serve-tcp / serve-pq) |
-| QVault     | (planejado)      | Sprint 5   | Armazenamento de blobs codificado em Zupt compatível com S3 |
+| QVault     | —                | Adiado     | Não implementado neste repositório; fora do escopo da release atual |
 
 ---
 
@@ -55,60 +74,65 @@ Merkle** e **assinado de forma pós-quântica**.
 - **Modelo de confiança:** qualquer parte que possua a chave pública do
   registro pode verificar toda a cadeia sem contatar o emissor — sem rede, sem
   relógio, sem custódia de chaves (key escrow).
-- **Conformidade:** projetado para atender ao LGPD Art. 46 ("estado da arte"),
-  Bacen Res. 4.893, Bacen Circ. 3.978 (retenção PLD-FT), CVM Res. 80, ANPD
-  GT-Cripto.
+- **Escopo:** evidências criptográficas de auditoria para os processos do
+  operador. A ferramenta não certifica conformidade regulatória, retenção,
+  tempo confiável nem formato oficial de entrega. O XML usa esquema próprio.
 
 ---
 
 ## Início rápido
 
 ```bash
-# Build
+# Compile
 cargo build --release --locked
 
-# Initialize a new log + ML-DSA-87 keypair.
-# In v1.0.1+, key files are named after the log: `audit.sk` and `audit.pk`,
-# placed next to `audit.qa`. Pass `--sk PATH --pk PATH` to override.
-./target/release/qaudit init --log audit.qa --label "qvault-prod-sp"
+# Inicialize um registro e um par de chaves ML-DSA-87.
+# Por padrão, as chaves recebem o nome do registro: `audit.sk` e `audit.pk`,
+# ao lado de `audit.qa`. Use `--sk CAMINHO --pk CAMINHO` para sobrescrever.
+./target/release/qaudit init --log audit.qa --label "compliance-prod-sp"
 
-# Append events. In v1.0.1+, --sk and --pk default to <log-stem>.sk
-# and <log-stem>.pk next to the log file; the example below relies on
-# that. Pass --sk PATH --pk PATH if your keys live elsewhere.
+# Anexe eventos. --sk e --pk usam por padrão <nome-do-log>.sk e
+# <nome-do-log>.pk ao lado do registro; este exemplo usa esses padrões.
 ./target/release/qaudit append \
     --log audit.qa \
-    --actor "svc:qvault" --action "object.put" \
-    --resource "vault://prod/customers/2026-05/file.pdf" \
+    --actor "svc:qgateway" --action "session.open" \
+    --resource "gateway://prod/branch-sp/session-42" \
     --meta size_bytes=182734 --meta tenant=itau
 
-# Verify (anyone with the .pk file can do this; no .sk needed)
+# Verifique com a chave pública .pk; a chave privada .sk não é necessária.
 ./target/release/qaudit verify --log audit.qa --pk audit.pk
 
-# Inspect (human-readable)
+# Inspecione em formato legível.
 ./target/release/qaudit inspect --log audit.qa --limit 10
 
-# Inspect (machine-readable, NDJSON)
+# Inspecione em NDJSON para processamento automático.
 ./target/release/qaudit inspect --log audit.qa --json
 
-# Export to Bacen / CVM / ANPD XML schema v1
+# Exporte no esquema XML v1 próprio do QAudit.
 ./target/release/qaudit export --log audit.qa --format xml --out export.xml
 
-# Export to newline-delimited JSON for log aggregators (Splunk, Elastic, Wazuh)
+# Exporte JSON por linha para agregadores (Splunk, Elastic, Wazuh).
 ./target/release/qaudit export --log audit.qa --format jsonl --out export.jsonl
 
-# Read-only web portal for auditors (binds 127.0.0.1 by default)
+# Abra o portal somente leitura; por padrão, escuta em 127.0.0.1.
 ./target/release/qaudit-portal --log audit.qa --pk audit.pk --listen 127.0.0.1:8080
-# then open http://127.0.0.1:8080/ — also exposes /api/info, /api/entries, /api/verify
+# Acesse http://127.0.0.1:8080/?lang=pt-BR; APIs: /api/info, /api/entries, /api/verify.
 ```
 
 ---
 
+Cada arquivo `.qa` deve ter **um único escritor**. Não execute `qaudit append`
+ou `qaudit rotate` enquanto um gateway ou outro processo escreve no mesmo
+arquivo. A substituição atômica evita arquivos parcialmente gravados, mas não
+serializa escritores independentes nem impede perda de atualizações.
+
 ## Assinatura por HSM (produção)
 
-Chaves de software são exclusivas do modo de desenvolvimento. A partir do
-Sprint 2, o `qaudit-hsm` fornece um `Pkcs11Signer` para qualquer driver
-PKCS#11 v3 (Dinamo, YubiHSM 2, Thales Luna 7, Entrust nShield, SoftHSM 2).
-Compile a feature opcional:
+Chaves em arquivo e assinatura de auditoria opcional por PKCS#11 estão
+implementadas. Escolha a custódia conforme os requisitos da implantação.
+O `Pkcs11Signer` exige uma chave ML-DSA-87 e o mecanismo exato do seu módulo.
+O projeto não certificou os HSMs mencionados. Consulte as
+[limitações de compatibilidade](docs/HSM.pt-BR.md). Compile a feature opcional:
 
 ```bash
 cargo build --release --locked -p qaudit-hsm --features pkcs11
@@ -124,30 +148,36 @@ let cfg = Pkcs11Config::new("/opt/dinamo/lib/libdinamo.so", 0, "audit-prod-key")
     .with_pin(std::env::var("HSM_PIN")?)
     .with_mechanism_id(0x8000_0001); // vendor-specific ML-DSA OID
 let signer = Pkcs11Signer::open(cfg)?;
-let log = AuditLog::create_with_signer(signer, "qvault-prod-sp")?;
+let log = AuditLog::create_with_signer(signer, "compliance-prod-sp")?;
 ```
 
-ML-DSA sobre PKCS#11 atualmente usa IDs de mecanismo definidos pelo fornecedor;
-o padrão é `CKM_VENDOR_DEFINED + 0x0001` e pode ser sobrescrito por HSM.
-Espera-se que o PKCS#11 v3.2 padronize `CKM_ML_DSA`; quando for lançado, o
-padrão será atualizado.
+A implementação usa por padrão o mecanismo definido pelo fornecedor
+`0x8000_0001`. Esse valor é configurável e não garante compatibilidade.
+Defina o ID conforme a documentação do fornecedor e execute o teste real
+de assinatura/verificação no módulo provisionado.
 
 ---
 
 ## Verificando um registro de forma independente (cenário do auditor)
 
-Um regulador recebe `audit.qa` e `qaudit.pk` do banco. Ele executa:
+Um regulador recebe `audit.qa` e `audit.pk` do banco. Ele executa:
 
 ```bash
-qaudit verify --log audit.qa --pk qaudit.pk
+qaudit verify --log audit.qa --pk audit.pk
 ```
 
-Código de saída `0` ⇒ toda assinatura é válida sob aquela chave, cada elo da
-cadeia se mantém, nenhuma entrada foi inserida, excluída ou reordenada.
-Qualquer adulteração em qualquer ponto do arquivo produz um código de saída
-diferente de zero com um diagnóstico preciso. A mesma garantia se aplica ao
-`qaudit export` (que por padrão se recusa a exportar um registro que falhe na
-verificação pré-exportação).
+Código de saída `0` indica que as entradas disponíveis passaram pela
+verificação de assinaturas e encadeamento com a chave fornecida. Confirme a
+procedência dessa chave por um canal confiável. Guarde separadamente a raiz
+final, a contagem de entradas e o inventário ordenado dos segmentos para
+detectar retorno a versões antigas ou exclusão de entradas completas no final.
+
+No formato wire-v1, o rótulo e a data de criação do cabeçalho e o campo
+`appended_at` não são autenticados pelas assinaturas. Os horários dos eventos
+assinados são declarações do produtor, sem fonte de tempo independente.
+`qaudit inspect` exibe conteúdo sem verificá-lo; `qaudit export` verifica pela
+chave incorporada por padrão, mas seu XML é um formato próprio, sem aprovação
+regulatória. Execute `verify --pk` antes de compartilhar exportações.
 
 ---
 
@@ -1410,7 +1440,7 @@ O padrão (`poll_interval_ms` não definido) preserva o comportamento de
 O Sprint 36 entrega a lacuna v1.0→produção: dois documentos voltados ao
 operador em `docs/`.
 
-[`docs/RUNBOOK.md`](./docs/RUNBOOK.md) (~700 linhas) cobre:
+[`docs/RUNBOOK.pt-BR.md`](./docs/RUNBOOK.pt-BR.md) (~700 linhas) cobre:
 - Implantação em produção (instalação do binário, unit systemd com hardening,
   procedimento de geração de chaves, referência do schema de configuração)
 - Operações diárias (contrato de sinais completo: SIGTERM/SIGHUP/SIGUSR1/SIGUSR2
@@ -1425,15 +1455,17 @@ operador em `docs/`.
   de métrica e remediação
 - Procedimento de resposta a incidentes (com orientação explícita: NÃO exclua
   registros de auditoria, NÃO use SIGKILL, faça snapshot e depois verifique)
-- Lista honesta do que ainda falta para o lançamento da v1.0 (sem `--dry-run`,
-  sem JSON de referência do Grafana, sem documento formal de mapeamento de
-  conformidade, sem procedimento de DR)
+- Lista honesta das lacunas operacionais restantes (sem JSON de referência do
+  Grafana, sem documento formal de mapeamento de conformidade e sem
+  procedimento de DR)
 
-[`docs/HSM.md`](./docs/HSM.md) (~400 linhas) cobre:
+[`docs/HSM.pt-BR.md`](./docs/HSM.pt-BR.md) (~400 linhas) cobre:
 - Justificativa do modelo de ameaças para assinatura de auditoria com respaldo
   de hardware
-- Matriz de HSMs testados (SoftHSM2 ✅, YubiHSM2/Thales/Utimaco 🟡 não testados,
-  pendente de acesso ao hardware)
+- Matriz honesta de compatibilidade HSM: o caminho PKCS#11 opcional é
+  compilado e testado unitariamente, mas a interoperabilidade ML-DSA-87 ao
+  vivo só é validada quando o teste de round trip ignorado passa no
+  dispositivo-alvo
 - Fluxo de provisionamento (gerar no HSM, nunca importar; exportar a chave
   pública para os auditores)
 - Tratamento de PIN via `pin_env` + `EnvironmentFile` do systemd (NUNCA no
@@ -1454,52 +1486,30 @@ secreto e qual é publicável.
 
 ### Higiene de release para v1.0 (Sprint 38)
 
-O Sprint 38 tornou a alegação de build reproduzível verdadeira no nível do
-artefato em vez de aspiracional. Três defeitos concretos foram corrigidos (sem
-mudança de código, apenas higiene de repositório):
+O Sprint 38 estabeleceu os pré-requisitos de repositório para builds
+repetíveis. Ele não provou, por si só, reprodutibilidade byte a byte nem
+publicou artefatos de release:
 
-1. **O `Cargo.lock` agora é incluído no tarball de release.** Anteriormente, o
-   comando canônico de envio o excluía. Os operadores downstream agora podem
-   reproduzir a árvore de dependências exata.
+1. **O `Cargo.lock` está versionado e deve integrar o arquivo-fonte.** Os
+   operadores downstream podem resolver a árvore de dependências exata.
 2. **`rust-toolchain.toml` fixado em `1.95.0`** (era `stable`, que varia entre
    releases do Rust). Atualizá-lo exige edição intencional + revalidação contra
    a suíte de testes.
-3. **A CI usa `dtolnay/rust-toolchain@1.95.0`** em todos os jobs (era
-   `@stable`). Três passos adicionais de CI fecharam lacunas de cobertura:
-   clippy + build de `qgateway --features pkcs11` (antes só se fazia lint/build
-   de `qaudit-hsm` com a feature), e duas invocações de `qgateway validate` no
-   job de smoke (uma pré-daemon, uma com o daemon A em execução para provar na
-   CI o compromisso de não interferência da RUNBOOK §3.2).
+3. **A CI e o processo canônico de release usam Rust 1.95.0** e dependências
+   travadas. Eles também cobrem os caminhos opcionais de build PKCS#11;
+   `qgateway validate` é exercitado pelos testes de integração do workspace.
 
-Nenhum código novo, nenhum teste novo. O repositório agora passa no teste
-básico de reprodutibilidade do Bacen: toolchain fixada + dependências travadas
-+ prova em CI.
+Ferramentas e dependências fixadas tornam repetíveis as entradas do build. A
+reprodutibilidade só é alegada quando artefatos reconstruídos de forma
+independente são comparados; um único build bem-sucedido não prova saída
+idêntica byte a byte.
 
-**Ainda não individualmente removível** (Sprint 19+):
-
-- Grupos SNI multi-tenant (listener compartilhado — exigiria um protocolo de
-  mutação da tabela de dispatch)
-- Tenants únicos com TLS habilitado (o trigger de reload de TLS é rastreado por
-  índice, não por nome de tenant — remover um deixaria a entrada do trigger
-  órfã)
-
-Para esses, o reinício do daemon ainda é o caminho de limpeza.
-
-O que funciona no Sprint 13:
-
-- Tenants `serve-pq` (quaisquer) — adição completa em tempo de execução com
-  atendimento de tráfego.
-- Tenants `serve-tcp` SEM `[tls]` e SEM `sni` — adição completa em tempo de
-  execução com atendimento de tráfego.
-- Diff ciente da configuração: detecta todas as mudanças materiais de campos
-  (listen / peer_pq / backend / peer_pub_dir / audit_log / tls / sni /
-   audit_signer / limits) em tenants existentes e as reporta, mas o daemon NÃO
-  reinicia o tenant automaticamente — o operador decide se reinicia com base em
-  quais campos mudaram.
-
-O Sprint 14 trará hot-add de TLS, adição de grupo SNI em tempo de execução,
-remoção de tenant e reconfiguração a quente de `limits` (o único campo
-atualmente identificado como aplicável a quente).
+O daemon atual inclui o trabalho posterior de ciclo de vida documentado no
+SPEC: adição/remoção de tenants em tempo de execução, ciclo de vida de TLS e
+grupos SNI, atualizações a quente de limites, overrides de assinador de
+auditoria por tenant e validação offline da configuração. Campos frios,
+incluindo mudanças de identidade do assinador, ainda exigem reinício controlado
+pelo operador.
 
 ---
 
@@ -1548,8 +1558,8 @@ a outra baseada em registros).
 | Arquivo        | Conteúdo                              | Permissões   |
 |----------------|---------------------------------------|--------------|
 | `audit.qa`     | O registro em si (CBOR, com prefixo mágico) | 0644         |
-| `qaudit.pk`    | Chave pública ML-DSA-87 (2592 bytes)  | 0644         |
-| `qaudit.sk`    | Chave secreta ML-DSA-87 (4896 bytes)  | **0600** no Unix |
+| `audit.pk`     | Chave pública ML-DSA-87 (2592 bytes)  | 0644         |
+| `audit.sk`     | Chave secreta ML-DSA-87 (4896 bytes)  | **0600** no Unix |
 
 Em produção, os segredos devem ser mantidos em um HSM via PKCS#11 (Sprint 2).
 Chaves de software são exclusivas do modo de desenvolvimento.
@@ -1562,25 +1572,53 @@ Chaves de software são exclusivas do modo de desenvolvimento.
 .
 ├── SPEC.md                       # technical specification — master spec
 ├── README.md                     # this file
-├── Cargo.toml                    # workspace
+├── Cargo.toml                    # workspace com sete crates
+├── Cargo.lock                    # trava de dependências versionada
+├── rust-toolchain.toml           # versão exata do Rust
 ├── crates/
 │   ├── qaudit-core/              # library — Merkle + signing + log
-│   └── qaudit/                   # CLI binary
-└── .github/workflows/ci.yml
+│   ├── qaudit-hsm/               # softkey + assinador PKCS#11 opcional
+│   ├── qaudit/                   # CLI qaudit
+│   ├── qaudit-portal/            # portal somente-leitura
+│   ├── qtransport-cspq/          # transporte CSPQ
+│   ├── qgateway-core/            # biblioteca do gateway
+│   └── qgateway/                 # CLI do daemon gateway
+├── docs/                         # documentação EN + pt-BR
+├── packaging/                    # ativos de empacotamento
+├── scripts/                      # ferramentas canônicas de validação/release
+└── .github/workflows/            # workflow de integração contínua
 ```
 
 ---
 
+## Empacotamento para distribuições
+
+O repositório inclui receitas para Nix e GNU Guix em `packaging/`. São
+receitas do projeto; a disponibilidade em repositórios oficiais depende da
+revisão e aceitação de cada distribuição.
+
+```bash
+nix-build --no-out-link -E 'let pkgs = import <nixpkgs> {}; in pkgs.callPackage ./packaging/nix/package.nix {}'
+guix build -f packaging/guix/package.scm
+```
+
+A receita Guix exige um canal que exporte `rust-1.95`. O gerador
+`packaging/prepare-release.py` prepara candidatos para nixpkgs, Arch, Alpine e
+FreeBSD a partir de um arquivo-fonte de release e sua URL HTTPS, em um novo
+diretório fora da árvore de fontes. Use `--help` para os argumentos completos.
+
 ## Compilando a partir do código-fonte
 
-Requer Rust 1.75+ (testado em 1.95).
+Requer exatamente o toolchain Rust 1.95.0 fixado por
+`rust-toolchain.toml` e um compilador/linker C funcional para dependências
+nativas.
 
 ```bash
 git clone https://git.securityops.co/cristiancmoises/cofre-soberano-pq.git
 cd cofre-soberano-pq
 cargo build --release --locked
-cargo test  --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test  --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt   --all -- --check
 ```
 
@@ -1588,15 +1626,17 @@ cargo fmt   --all -- --check
 
 ## Modelo de ameaças (sprint atual)
 
-- **Insider editando entradas passadas:** detectado (a cadeia quebra → saída
-  diferente de zero).
-- **Insider excluindo / reordenando entradas:** detectado.
-- **Insider com a chave de assinatura, anexando entradas falsas:** **não**
-  prevenido. A chave secreta deve ser mantida em um HSM em implantações de
-  produção (Sprint 2).
-- **Adversário quântico:** as assinaturas são ML-DSA-87 (NIST Categoria 5). Os
-  hashes são BLAKE3-256 (Grover não reduz de forma significativa a resistência
-  a colisões de 256 bits).
+- **Dados de eventos assinados alterados ou entradas reordenadas:** rejeitados.
+- **Exclusão de entradas completas no final ou substituição por registro antigo:**
+  exige um checkpoint ou inventário confiável guardado separadamente.
+- **Metadados de cabeçalho e `appended_at`:** fora da cobertura das assinaturas wire-v1.
+- **Autoridade de assinatura comprometida:** pode assinar eventos falsos. HSM
+  limita a extração da chave; não valida as declarações da aplicação.
+- **Criptografia:** assinaturas ML-DSA-87 e compromissos BLAKE3-256. A release
+  tem testes automatizados e revisão interna do código; não reivindica
+  certificação criptográfica independente.
+- **Transporte:** CSPQ é um protocolo próprio com identidades de peers fixadas;
+  não substitui automaticamente TLS padronizado nem autorização da aplicação.
 
 ---
 

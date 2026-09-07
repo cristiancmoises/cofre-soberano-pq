@@ -24,14 +24,16 @@ audit signing key, they can:
 - Convince a regulator that the gateway recorded a sequence of events
   that never actually occurred
 
-Putting the key in an HSM means:
+With a correctly configured and independently validated HSM, the intended
+properties are:
 
 - Even with full root access to the gateway host, the attacker cannot
   exfiltrate the key bytes
-- Every sign operation leaves an audit trail on the HSM itself
-  (independent of the chain it's signing)
-- Compliance auditors get a hardware attestation that the signing
-  key is constrained to the HSM's certified boundary
+- HSM-side audit records may provide an independent operation trail when the
+  selected appliance and policy enable that feature
+- Certification and attestation evidence come from the HSM vendor and the
+  operator's provisioning process; qgateway does not generate hardware
+  attestation evidence
 
 The trade-off: a sign call now requires a round-trip to the HSM
 (typically network — even local PCIe HSMs serialise through a single
@@ -45,22 +47,27 @@ should benchmark.
 
 Cofre Soberano PQ depends on `qaudit-hsm` (workspace crate) with the
 `pkcs11` feature. The implementation is generic across vendors that
-support ML-DSA-87 via a vendor-defined PKCS#11 mechanism — this is the
-state of the standard as of v1.0.
+expose an ML-DSA-87 key and a mechanism supported by the implementation.
+Validate its ID against the chosen module, firmware, and driver.
 
-Tested:
+Compatibility status:
 
 | HSM | Status | Notes |
 |---|---|---|
-| **SoftHSM2** | ✅ Lib-tested | Used by qaudit-hsm's CI. ML-DSA-87 emulated in software; not certified. Useful for dev + CI. |
-| **YubiHSM2** (firmware 2.4+) | 🟡 Untested | ML-DSA support announced; expect Sprint 36+ verification when hardware is available. |
-| **Thales Luna** | 🟡 Untested | Firmware-dependent; check vendor for ML-DSA mechanism availability. |
-| **Utimaco SecurityServer** | 🟡 Untested | Same caveat. |
+| **SoftHSM2** | 🟡 Compile/unit-test only | Useful for exercising generic PKCS#11 code, but it cannot host the ML-DSA-87 key required by the live test. |
+| **YubiHSM2** | 🟡 Not live-tested | Confirm ML-DSA-87 mechanism support with the exact hardware, firmware, and driver. |
+| **Thales Luna** | 🟡 Not live-tested | Firmware- and capability-dependent; confirm the mechanism with the vendor. |
+| **Utimaco SecurityServer** | 🟡 Not live-tested | Firmware- and capability-dependent; confirm the mechanism with the vendor. |
 
-The PKCS#11 standard's ML-DSA mechanism is in flux as of 2026. Vendors
-ship under different mechanism IDs (typically `CKM_VENDOR_DEFINED + N`).
-The `mechanism_id` config field lets operators pin the exact ID their
-HSM uses without recompiling.
+CI compiles and unit-tests the optional `pkcs11` path. The live
+`qaudit-hsm::pkcs11::tests::live_hsm_sign_verify` test is ignored by default
+because it requires a provisioned ML-DSA-87 device. Run that round trip against
+the exact production module before deployment; a successful build is not proof
+of HSM interoperability.
+
+The adapter defaults to `0x8000_0001`, a vendor-defined mechanism.
+Set `mechanism_id` to the value documented for your module. The existence
+of a mechanism ID alone does not establish ML-DSA-87 support.
 
 If your HSM doesn't yet expose ML-DSA-87 at the PKCS#11 layer, the
 softkey fallback is honest: ship with file-based keys at restrictive
@@ -77,43 +84,36 @@ The audit signing keypair must be generated **on the HSM**, not
 imported. Importing defeats the purpose of HSM custody (the secret
 key transited a host where it could have been logged or backed up).
 
-Vendor-specific commands; SoftHSM2 example (for development only —
-not production):
+Provisioning and public-key export are vendor-specific. This repository does
+not ship an `qaudit-hsm-tool` provisioning binary. Use the HSM vendor's
+documented tooling or SDK to:
+
+1. generate an ML-DSA-87 private/public keypair inside the device;
+2. assign the `CKA_LABEL` values used by `key_label` and `pub_label`;
+3. export only the public key as raw 2592-byte ML-DSA-87 bytes (or the
+   `AUDITPK0`-framed form accepted by the QAudit tools); and
+4. record the module, firmware, mechanism ID, and public-key hash in the
+   deployment evidence.
+
+For example, token initialization may start with a vendor command such as the
+following, but it does not provision an ML-DSA key by itself:
 
 ```bash
 # Initialize a SoftHSM2 token
 softhsm2-util --init-token --slot 0 --label "qgateway-audit" \
     --so-pin 1234 --pin 5678
-
-# Generate the ML-DSA-87 keypair via the vendor's tooling.
-# SoftHSM2 doesn't natively support ML-DSA at the CLI as of writing;
-# use the qaudit-hsm-tool helper (shipped in v1.1+) or vendor SDK.
-qaudit-hsm-tool keygen-on-hsm \
-    --module /usr/lib/softhsm/libsofthsm2.so \
-    --slot 0 \
-    --pin 5678 \
-    --label "audit-2026"
 ```
 
-After provisioning, export the public key blob for distribution to
-auditors:
-
-```bash
-qaudit-hsm-tool export-pubkey \
-    --module /usr/lib/softhsm/libsofthsm2.so \
-    --slot 0 \
-    --pin-env QGATEWAY_HSM_PIN \
-    --label "audit-2026" \
-    --out /etc/qgateway/audit.pub
-```
-
-The exported `.audit.pub` is the same file format as the softkey path's
-`.audit.pub` — auditors verify the same way regardless of whether the
-signer was softkey or HSM.
+SoftHSM2 does not provide the required live ML-DSA-87 path; the example is only
+for generic PKCS#11 development. After vendor-specific provisioning, retain the
+exported public key as `/etc/qgateway/audit.pub` for auditor distribution.
+QAudit accepts either raw ML-DSA-87 public-key bytes or the framed
+`.audit.pub` form, so verification is independent of signer custody.
 
 ### 3.2 Daemon config
 
-`/etc/qgateway/sidecar.toml`, replacing the `[audit_signer]` block:
+`/etc/qgateway/sidecar.toml`, replacing the top-level `[audit_signer]` default
+or using `[tenants.audit_signer]` for a tenant-specific HSM identity:
 
 ```toml
 [audit_signer]
@@ -124,8 +124,8 @@ pin_env      = "QGATEWAY_HSM_PIN"
 key_label    = "audit-2026"
 # Optional: separate label if the HSM stores pub and priv distinctly
 # pub_label  = "audit-2026-pub"
-# Optional: pin the vendor's mechanism ID (defaults to a sensible
-# value if your HSM uses a standard ID)
+# Set the mechanism ID documented by your vendor.
+# Default 0x80000001 is vendor-defined; it is not a portable standard ID.
 # mechanism_id = 0x80000123
 ```
 
@@ -260,9 +260,10 @@ If the rate is near the HSM's spec, consider:
 - Batching multiple audit events per sign (NOT YET IMPLEMENTED;
   Sprint 36+ work)
 - Upgrading HSM hardware
-- Using a softkey signer for non-critical tenants and HSM only for
-  compliance-critical tenants (each tenant has its own audit signer
-  in v1.1+ — currently the signer is daemon-wide)
+- Using tenant-specific softkey signers for non-critical tenants and HSM
+  signers only for compliance-critical tenants. Per-tenant overrides are
+  already supported through `[tenants.audit_signer]`; an omitted override
+  inherits the top-level default.
 
 ### 4.4 Rotating the HSM key
 
@@ -301,7 +302,7 @@ verify the right historical period against the right key.
   sign requests; it can't tell whether the request came from
   legitimate audit-event flow or from injected code). Mitigation:
   the daemon's `#![forbid(unsafe_code)]` posture + minimal
-  dependency surface + reproducible builds. But ultimately:
+  dependency surface + pinned, locked release builds. But ultimately:
   defense-in-depth, not silver bullet.
 - **Physical attack on the HSM itself**. Most HSMs are FIPS 140-2
   / 140-3 Level 3 certified for tamper-evidence, but determined
@@ -314,10 +315,8 @@ verify the right historical period against the right key.
   ML-DSA-87 implementations are still maturing on this front;
   vendor-specific.
 
-### 5.2 Roadmap items (Sprint 36+ if demand)
+### 5.2 Roadmap items (operator-demand-gated)
 
-- Per-tenant audit signers (currently daemon-wide; planned for
-  multi-tenant deployments where each tenant has its own HSM slot)
 - Sign-op batching (sign N events with one HSM round-trip)
 - HSM cluster awareness (failover across redundant HSMs)
 - Native key-attestation flow (cryptographic proof to auditors that

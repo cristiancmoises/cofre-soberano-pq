@@ -150,3 +150,93 @@ fn init_refuses_to_overwrite_without_force() {
         "expected refusal message, got: {stderr}"
     );
 }
+
+#[test]
+fn init_rejects_colliding_output_paths_before_writing() {
+    let tmp = TempDir::new().unwrap();
+    let out = run(
+        &["init", "--log", "same.qa", "--sk", "./same.qa", "--force"],
+        tmp.path(),
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("distinct"));
+    assert!(!tmp.path().join("same.qa").exists());
+    assert!(!tmp.path().join("same.pk").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_force_restricts_existing_secret_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("test.sk"), "old key").unwrap();
+    std::fs::set_permissions(
+        tmp.path().join("test.sk"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let out = run(&["init", "--log", "test.qa", "--force"], tmp.path());
+    assert_ok(&out, "replace permissive secret file");
+    assert_eq!(
+        std::fs::metadata(tmp.path().join("test.sk"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn init_refuses_symlink_outputs_even_with_force() {
+    let tmp = TempDir::new().unwrap();
+    let victim = tmp.path().join("victim");
+    std::fs::write(&victim, "preserve this").unwrap();
+    std::os::unix::fs::symlink("victim", tmp.path().join("test.sk")).unwrap();
+    let out = run(&["init", "--log", "test.qa", "--force"], tmp.path());
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read_to_string(victim).unwrap(), "preserve this");
+    assert!(!tmp.path().join("test.qa").exists());
+}
+
+#[test]
+fn export_and_pubkey_refuse_to_overwrite_source_log() {
+    let tmp = TempDir::new().unwrap();
+    assert_ok(&run(&["init", "--log", "test.qa"], tmp.path()), "init");
+    let before = std::fs::read(tmp.path().join("test.qa")).unwrap();
+    for command in ["export", "pubkey"] {
+        let out = run(
+            &[command, "--log", "test.qa", "--out", "./test.qa"],
+            tmp.path(),
+        );
+        assert!(!out.status.success());
+        assert_eq!(std::fs::read(tmp.path().join("test.qa")).unwrap(), before);
+    }
+}
+
+#[test]
+fn rotate_refuses_to_overwrite_input_even_with_force() {
+    let tmp = TempDir::new().unwrap();
+    assert_ok(&run(&["init", "--log", "test.qa"], tmp.path()), "init");
+    let before = std::fs::read(tmp.path().join("test.qa")).unwrap();
+    let out = run(
+        &[
+            "rotate",
+            "--in",
+            "test.qa",
+            "--out",
+            "./test.qa",
+            "--sk",
+            "test.sk",
+            "--pk",
+            "test.pk",
+            "--new-label",
+            "next",
+            "--force",
+        ],
+        tmp.path(),
+    );
+    assert!(!out.status.success());
+    assert_eq!(std::fs::read(tmp.path().join("test.qa")).unwrap(), before);
+}

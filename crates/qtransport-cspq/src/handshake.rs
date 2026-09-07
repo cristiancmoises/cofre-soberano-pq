@@ -63,9 +63,9 @@ impl IdentityKey {
     /// Load a peer public-key file written by [`IdentityKey::save_public`].
     pub fn load_public<P: AsRef<Path>>(path: P) -> Result<IdPublicKey> {
         let blob = std::fs::read(path).map_err(Error::from)?;
-        if blob.len() < 8 + qaudit_core::signing::PUBLIC_KEY_LEN {
+        if blob.len() != 8 + qaudit_core::signing::PUBLIC_KEY_LEN {
             return Err(Error::Identity(format!(
-                "file too short: {} bytes",
+                "file has invalid length: {} bytes",
                 blob.len()
             )));
         }

@@ -21,7 +21,7 @@ qaudit-core = { path = "../qaudit-core" }
 thiserror   = { workspace = true }
 hex         = { workspace = true }
 zeroize     = { workspace = true }
-cryptoki    = { version = "0.10", optional = true }
+cryptoki    = { version = "0.12", optional = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }

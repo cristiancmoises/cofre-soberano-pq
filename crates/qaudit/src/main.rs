@@ -47,7 +47,7 @@ enum Cmd {
     Pubkey(PubkeyArgs),
     /// Show header metadata only.
     Info(InfoArgs),
-    /// Export the log for a regulator (Bacen XML or NDJSON).
+    /// Export the log as project-defined XML or NDJSON.
     Export(ExportArgs),
     /// Sprint 7.5: rotate a log offline — appends `rotation_close` to the
     /// input log, creates a new file with `rotation_open` as its first
@@ -166,7 +166,7 @@ struct InfoArgs {
 /// Output format for `qaudit export`.
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum ExportFormat {
-    /// Bacen/CVM/ANPD XML schema v1 (default).
+    /// Project-defined QAudit XML schema v1 (default).
     Xml,
     /// Newline-delimited JSON, one entry per line.
     Jsonl,
@@ -223,36 +223,99 @@ fn main() -> Result<()> {
 }
 
 fn ensure_overwritable(path: &std::path::Path, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        anyhow::bail!(
-            "refusing to overwrite existing file {} (pass --force)",
-            path.display()
-        );
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                anyhow::bail!("refusing non-regular output file {}", path.display());
+            }
+            if !force {
+                anyhow::bail!(
+                    "refusing to overwrite existing file {} (pass --force)",
+                    path.display()
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("checking {}", path.display())),
     }
     Ok(())
 }
 
-fn write_secret(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+fn output_identity(path: &std::path::Path) -> Result<PathBuf> {
+    if path.exists() {
+        return std::fs::canonicalize(path)
+            .with_context(|| format!("resolving {}", path.display()));
     }
-    let mut f = opts
-        .open(path)
-        .with_context(|| format!("opening {} for write", path.display()))?;
-    f.write_all(bytes)?;
-    f.flush()?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name().context("output path must name a file")?;
+    Ok(std::fs::canonicalize(parent)
+        .with_context(|| format!("resolving output directory {}", parent.display()))?
+        .join(name))
+}
+
+fn ensure_distinct_paths(paths: &[&std::path::Path]) -> Result<()> {
+    for (index, path) in paths.iter().enumerate() {
+        let identity = output_identity(path)?;
+        for other in &paths[..index] {
+            let mut same_file = identity == output_identity(other)?;
+            #[cfg(unix)]
+            if let (Ok(a), Ok(b)) = (std::fs::metadata(path), std::fs::metadata(other)) {
+                use std::os::unix::fs::MetadataExt;
+                same_file |= a.dev() == b.dev() && a.ino() == b.ino();
+            }
+            if same_file {
+                anyhow::bail!(
+                    "paths must be distinct files: {} and {}",
+                    path.display(),
+                    other.display()
+                );
+            }
+        }
+    }
     Ok(())
+}
+
+// A private same-directory file prevents secret disclosure through permissive
+// existing modes or symlinks. persist_noclobber closes the existence-check race.
+fn write_output(
+    path: &std::path::Path,
+    force: bool,
+    write: impl FnOnce(&mut std::fs::File) -> Result<()>,
+) -> Result<()> {
+    ensure_overwritable(path, force)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary output for {}", path.display()))?;
+    write(temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    if force {
+        temporary.persist(path)
+    } else {
+        temporary.persist_noclobber(path)
+    }
+    .map_err(|e| e.error)
+    .with_context(|| format!("publishing {}", path.display()))?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn write_key(path: &std::path::Path, bytes: &[u8], force: bool) -> Result<()> {
+    use std::io::Write;
+    write_output(path, force, |file| Ok(file.write_all(bytes)?))
 }
 
 fn cmd_init(a: InitArgs) -> Result<()> {
     let sk_path = a.sk.unwrap_or_else(|| derive_key_path(&a.log, "sk"));
     let pk_path = a.pk.unwrap_or_else(|| derive_key_path(&a.log, "pk"));
 
+    ensure_distinct_paths(&[&a.log, &sk_path, &pk_path])?;
     ensure_overwritable(&a.log, a.force)?;
     ensure_overwritable(&sk_path, a.force)?;
     ensure_overwritable(&pk_path, a.force)?;
@@ -261,12 +324,11 @@ fn cmd_init(a: InitArgs) -> Result<()> {
     let pk_bytes = kp.public().as_bytes().to_vec();
     let sk_bytes = kp.secret().as_bytes().to_vec();
 
-    write_secret(&sk_path, &sk_bytes)?;
-    std::fs::write(&pk_path, &pk_bytes)
-        .with_context(|| format!("writing public key {}", pk_path.display()))?;
+    write_key(&sk_path, &sk_bytes, a.force)?;
+    write_key(&pk_path, &pk_bytes, a.force)?;
 
     let log = AuditLog::create_with_label(kp, a.label.clone()).context("creating audit log")?;
-    log.save(&a.log)
+    write_output(&a.log, a.force, |file| Ok(log.save_to(file)?))
         .with_context(|| format!("writing log {}", a.log.display()))?;
 
     eprintln!("qaudit: initialized");
@@ -357,7 +419,12 @@ fn load_keypair(sk_path: &std::path::Path, pk_path: &std::path::Path) -> Result<
         .with_context(|| format!("reading public key {}", pk_path.display()))?;
     let sk = SecretKey::from_bytes(&sk_bytes).context("decoding secret key")?;
     let pk = PublicKey::from_bytes(&pk_bytes).context("decoding public key")?;
-    Ok(KeyPair::from_parts(pk, sk))
+    let keypair = KeyPair::from_parts(pk, sk);
+    let challenge = b"qaudit-keypair-consistency-v1";
+    let signature = keypair.sign(challenge).context("checking secret key")?;
+    qaudit_core::verify_signature(keypair.public(), challenge, &signature, 0)
+        .context("secret and public key files do not form a valid keypair")?;
+    Ok(keypair)
 }
 
 fn cmd_append(a: AppendArgs) -> Result<()> {
@@ -367,6 +434,9 @@ fn cmd_append(a: AppendArgs) -> Result<()> {
     let sk_path = resolve_key_path(a.sk.as_deref(), &a.log, "sk")?;
     let pk_path = resolve_key_path(a.pk.as_deref(), &a.log, "pk")?;
 
+    ensure_distinct_paths(&[&a.log, &sk_path, &pk_path])?;
+    log.verify()
+        .context("existing log failed verification; refusing to append")?;
     let kp = load_keypair(&sk_path, &pk_path)?;
     if kp.public().as_bytes() != log.header().pubkey.as_bytes() {
         anyhow::bail!(
@@ -421,6 +491,20 @@ fn cmd_verify(a: VerifyArgs) -> Result<()> {
     Ok(())
 }
 
+// Audit files are untrusted input. Render control characters visibly so an
+// event cannot clear the terminal, inject extra rows, or emit OSC commands.
+fn terminal_text(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_control() || matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            output.extend(ch.escape_default());
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
 fn cmd_inspect(a: InspectArgs) -> Result<()> {
     use std::io::Write;
     let log = AuditLog::open(&a.log).with_context(|| format!("opening log {}", a.log.display()))?;
@@ -450,11 +534,11 @@ fn cmd_inspect(a: InspectArgs) -> Result<()> {
             out,
             "log_id = {}   suite = {}   entries = {}",
             log.header().log_id,
-            log.header().suite,
+            terminal_text(&log.header().suite),
             log.len()
         )?;
         if !log.header().label.is_empty() {
-            writeln!(out, "label  = {}", log.header().label)?;
+            writeln!(out, "label  = {}", terminal_text(&log.header().label))?;
         }
         writeln!(out)?;
         for e in log.entries().iter().take(take) {
@@ -463,14 +547,19 @@ fn cmd_inspect(a: InspectArgs) -> Result<()> {
                 "[{:>6}] {}  {} :: {} -> {} ({})",
                 e.index,
                 e.appended_at.format("%Y-%m-%d %H:%M:%SZ"),
-                e.event.actor,
-                e.event.action,
-                e.event.resource,
-                e.event.outcome
+                terminal_text(&e.event.actor),
+                terminal_text(&e.event.action),
+                terminal_text(&e.event.resource),
+                terminal_text(&e.event.outcome)
             )?;
             if !e.event.metadata.is_empty() {
                 for (k, v) in &e.event.metadata {
-                    writeln!(out, "           meta.{k} = {v}")?;
+                    writeln!(
+                        out,
+                        "           meta.{} = {}",
+                        terminal_text(k),
+                        terminal_text(v)
+                    )?;
                 }
             }
             writeln!(out, "           root = {}", hex::encode(e.new_root))?;
@@ -490,6 +579,7 @@ fn cmd_pubkey(a: PubkeyArgs) -> Result<()> {
     let log = AuditLog::open(&a.log).with_context(|| format!("opening log {}", a.log.display()))?;
     let bytes = log.header().pubkey.as_bytes();
     if let Some(out) = a.out.as_ref() {
+        ensure_distinct_paths(&[&a.log, out])?;
         std::fs::write(out, bytes).with_context(|| format!("writing {}", out.display()))?;
         eprintln!("qaudit: wrote {} bytes to {}", bytes.len(), out.display());
     } else if a.hex {
@@ -506,15 +596,15 @@ fn cmd_info(a: InfoArgs) -> Result<()> {
     let h = log.header();
     println!("log file:      {}", a.log.display());
     println!("log_id:        {}", h.log_id);
-    println!("suite:         {}", h.suite);
+    println!("suite:         {}", terminal_text(&h.suite));
     println!("wire_version:  {}", h.wire_version);
     println!("created_at:    {}", h.created_at);
     println!(
         "label:         {}",
         if h.label.is_empty() {
-            "<none>"
+            "<none>".to_owned()
         } else {
-            h.label.as_str()
+            terminal_text(&h.label)
         }
     );
     println!(
@@ -538,6 +628,7 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
         ExportFormat::Jsonl => qaudit_core::export_jsonl(&log).context("JSONL export")?,
     };
     if let Some(out) = a.out.as_ref() {
+        ensure_distinct_paths(&[&a.log, out])?;
         std::fs::write(out, payload.as_bytes())
             .with_context(|| format!("writing {}", out.display()))?;
         eprintln!(
@@ -624,12 +715,20 @@ struct VerifyChainArgs {
 fn cmd_rotate(a: RotateArgs) -> Result<()> {
     use qaudit_core::Signer;
 
-    if a.out.exists() && !a.force {
-        anyhow::bail!(
-            "refusing to overwrite existing --out file {} (pass --force)",
-            a.out.display()
-        );
+    ensure_distinct_paths(&[&a.r#in, &a.out])?;
+    for key in [
+        Some(a.sk.as_path()),
+        Some(a.pk.as_path()),
+        a.new_sk.as_deref(),
+        a.new_pk.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        ensure_distinct_paths(&[&a.r#in, key])?;
+        ensure_distinct_paths(&[&a.out, key])?;
     }
+    ensure_overwritable(&a.out, a.force)?;
     // Sprint 9: validate cross-key flags together. Either both or neither.
     let cross_key = match (a.new_sk.as_ref(), a.new_pk.as_ref()) {
         (Some(_), Some(_)) => true,
@@ -644,6 +743,8 @@ fn cmd_rotate(a: RotateArgs) -> Result<()> {
 
     let mut old =
         AuditLog::open(&a.r#in).with_context(|| format!("opening log {}", a.r#in.display()))?;
+    old.verify()
+        .context("input log failed verification; refusing rotation")?;
     let kp = load_keypair(&a.sk, &a.pk)?;
     if kp.public().as_bytes() != old.header().pubkey.as_bytes() {
         anyhow::bail!(
@@ -682,12 +783,15 @@ fn cmd_rotate(a: RotateArgs) -> Result<()> {
         .rotate_to(new_signer, &a.new_label, &a.new_log_id)
         .context("rotating log")?;
 
-    sealed_old
-        .save(&a.r#in)
-        .with_context(|| format!("rewriting sealed input log {}", a.r#in.display()))?;
-    new_open
-        .save(&a.out)
+    write_output(&a.out, a.force, |file| Ok(new_open.save_to(file)?))
         .with_context(|| format!("writing new log {}", a.out.display()))?;
+    sealed_old.save(&a.r#in).with_context(|| {
+        format!(
+            "rewriting sealed input log {}; new segment exists at {} — preserve both for recovery",
+            a.r#in.display(),
+            a.out.display()
+        )
+    })?;
 
     eprintln!(
         "qaudit: rotated{}",
@@ -767,4 +871,15 @@ fn cmd_verify_chain(a: VerifyChainArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn terminal_output_escapes_injected_controls_and_preserves_portuguese() {
+        assert_eq!(
+            super::terminal_text("João\n\x1b[2J\u{202e}"),
+            "João\\n\\u{1b}[2J\\u{202e}"
+        );
+    }
 }

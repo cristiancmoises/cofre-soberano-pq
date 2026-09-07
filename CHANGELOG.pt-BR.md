@@ -15,6 +15,98 @@ novo identificador de suite.
 
 ---
 
+## [1.0.3] — 2026-09-06
+
+Atualização de segurança, integridade de release e usabilidade bilíngue.
+O protocolo de fio, a codificação `.qa` e a suite criptográfica permanecem
+inalterados (`cspq-2026`). Logs malformados, EOF sem autenticação, chaves
+ambíguas e operações inseguras em arquivos passam a ser rejeitados.
+
+### Adicionado
+
+- **Portal bilíngue.** Interface em inglês e pt-BR, paginação limitada, layout
+  responsivo, estado explícito de snapshot/confiança e cabeçalhos HTTP de
+  segurança. Capturas reais usam somente dados sintéticos.
+- **Empacotamento para distribuições.** Receitas locais Guix e Nix e geração
+  de candidatos a pacotes de release. A inclusão nas distribuições depende
+  da revisão de cada projeto e da validação nativa de build.
+- **Chaves públicas de release.** Chaves ML-DSA-87 e Sigstore rastreadas;
+  material privado permanece fora do repositório. A assinatura usa a
+  configuração padrão suportada do Cosign 3.1.3 e bundles verificáveis.
+- **Gates canônicos de CI.** `.github/workflows/ci.yml` agora tem como alvo o
+  branch real `master` e delega formatação, clippy, testes padrão/release,
+  builds PKCS#11, builds de release travados e auditoria de dependências ao
+  `scripts/ci.sh`. A validação local e a hospedada exigem o toolchain Rust
+  `1.95.0` exato declarado por `rust-toolchain.toml`.
+- **Empacotamento determinístico de release.** `scripts/release.sh` compila os
+  três executáveis (`qaudit`, `qaudit-portal` e `qgateway`) mais a variante
+  `qgateway-pkcs11`, arquivos-fonte e binários Linux determinísticos, um SBOM
+  CycloneDX 1.5, `release-manifest.json` e `SHA256SUMS`. A saída candidata é
+  explicitamente não publicável; o modo final exige adicionalmente uma tag de
+  versão anotada em uma árvore limpa e assinaturas ML-DSA-87 e Sigstore
+  verificadas. Referências do SBOM são normalizadas para não expor caminhos
+  temporários do build. O script nunca gera nem persiste chaves de assinatura.
+- **Serviço systemd rastreado.** `systemd/qgateway.service` fornece o contrato
+  de hardening e sinais antes mostrado apenas como exemplo no runbook.
+
+### Corrigido
+
+- **Persistência e falhas de assinatura.** Rejeita entradas CBOR parciais e
+  cabeçalhos inválidos; verifica o histórico antes de vinculá-lo ao signatário.
+  Falhas de assinatura preservam o estado Merkle. A gravação substitui o
+  arquivo atomicamente no mesmo diretório, com sincronização. A rotação mantém
+  o estado original em falhas de assinatura ou disco e não sobrescreve
+  arquivos de rotação existentes; uma falha na substituição do arquivo ativo
+  pode deixar um segmento concluído para reconciliação pelo operador.
+- **Truncamento do transporte.** Exige marcador EOF autenticado e preserva
+  texto descriptografado pendente, quadros em escrita e estado EOF ao dividir
+  o fluxo. Desconexões abruptas deixam de ser tratadas como sessões normais.
+- **Chaves e arquivos de saída.** Rejeita caminhos equivalentes e links
+  simbólicos, impede sobrescrita de chaves do gateway, verifica correspondência
+  do par e tamanho exato dos arquivos, e mantém permissões privadas na CLI.
+- **Falhas de HSM.** Oculta o PIN no Debug, limpa sua memória na substituição
+  ou descarte da configuração, rejeita rótulos duplicados e verifica localmente
+  cada assinatura do hardware antes de devolvê-la ao gravador de auditoria.
+- **Auditoria de dependências.** Atualiza quick-xml para 0.41, anyhow para
+  1.0.104 e cryptoki para 0.12; migra PEM para rustls-pki-types. Remove
+  paste/rustls-pemfile sem manutenção e AWS-LC desnecessário ao selecionar
+  explicitamente ring no tokio-rustls. Chaves TLS malformadas agora falham
+  na validação.
+
+- **O contêiner qaudit agora compila o workspace real.** O Dockerfile copia
+  todos os membros do workspace antes da resolução do Cargo, não descreve mais
+  seu binário glibc como musl, remove o exemplo obsoleto `0.1.0` e inclui
+  versão/revisão/data de build e metadados corretos de licença dupla na imagem.
+  O contexto Docker mínimo exclui dados e chaves de execução; a imagem inclui
+  os avisos de licença.
+- **A documentação de release e de operação agora corresponde ao repositório.**
+  Os documentos em inglês e pt-BR concordam sobre Rust `1.95.0`, nomes das
+  chaves geradas, suporte atual a signatário por tenant, `qgateway validate`,
+  caminho do serviço rastreado, conteúdo do bundle, verificação de SBOM e
+  assinaturas e quais itens da cadeia de suprimentos foram implementados ou
+  adiados. Alegações obsoletas sobre sprint, árvore do projeto, versão,
+  quantidade de testes e estado do QVault foram removidas ou corrigidas.
+
+### Alterado
+
+- **O escopo da licença dupla está preciso.** A opção AGPL permanece completa
+  e inalterada; `LICENSE-COMMERCIAL` é explicitamente um aviso de consulta e
+  escopo, não uma concessão de licença. `NOTICE` identifica o escopo autoral
+  próprio e preserva a licença de cada dependência. Os metadados do Cargo e do
+  contêiner usam a expressão SPDX correspondente sem sugerir direitos
+  comerciais que não tenham sido assinados separadamente.
+
+### Compatibilidade de fio / formato
+
+Logs e registros de transporte válidos de `1.0.2` e `1.0.3` mantêm a mesma
+codificação. As rejeições mais rigorosas acima são intencionais. Detectar a
+remoção de entradas finais completas ainda exige checkpoint externo confiável
+de contagem/raiz; rótulos do cabeçalho e timestamps de anexação não são
+autenticados pela assinatura v1. Esta revisão de manutenção não é certificação
+criptográfica independente. O teste ML-DSA em HSM exige hardware compatível real.
+
+---
+
 ## [1.0.2] — 2026-07-15
 
 Versão de precisão de documentação e de reforço do HSM. **Sem alteração no

@@ -9,6 +9,45 @@ the gateway in production, read this first.
 
 For HSM-backed key custody, see `HSM.md`.
 
+
+## Audit verification and portal access
+
+Run `qaudit verify --log audit.qa --pk audit.pk` with a key whose provenance
+was established outside the log. `qaudit inspect` only displays contents;
+its output does not prove integrity. Exported XML uses the project's own
+schema and does not imply regulatory approval.
+
+Keep the final root, entry count, and ordered segment inventory outside the
+signing host. Detecting complete trailing-entry removal or replay of an older
+valid log requires these checkpoints. Header labels/times and `appended_at`
+are not authenticated in wire-v1. A signed event time is not independently
+trusted time.
+
+The portal loads a read-only startup snapshot; `/api/verify` reports that
+snapshot's result. Restart it after selecting a new file or consistent copy
+of the log. `/healthz` only confirms HTTP liveness. The portal has no built-in
+authentication: retain the loopback binding and use an SSH tunnel or
+authenticated reverse proxy for remote access.
+
+```bash
+qaudit-portal --log audit.qa --pk audit.pk --listen 127.0.0.1:8080
+# English interface: http://127.0.0.1:8080/?lang=en
+# HTML pagination: ?offset=0&limit=50 (maximum 200)
+# JSON pagination: /api/entries?offset=0&limit=100 (maximum 1000)
+```
+
+![English audit portal](../screenshots/portal-en.png)
+
+Maintain **one writer per `.qa` file**, including CLI processes and daemons.
+Atomic replacement protects against partial rewrites; it does not implement
+interprocess mutual exclusion. Independent writers need operational
+serialization to avoid lost updates.
+
+Before `qaudit rotate`, stop the log's writer and back up both segments.
+Rotation publishes the new file before replacing the old one; those writes
+are not one atomic transaction. On failure, preserve both files and verify
+the chain before resuming writes.
+
 ---
 
 ## 1. Audience and scope
@@ -33,35 +72,72 @@ audit `.audit.pub` artifact.
 
 ### 2.1 Binary distribution
 
-The release tarball contains:
+Each release publishes a platform-labelled binary bundle, a source archive,
+an SBOM, a machine-readable manifest, `SHA256SUMS`, and detached ML-DSA-87 and
+Sigstore signatures. The binary bundle contains:
 
 ```
-qgateway/
+cofre-soberano-pq-vX.Y.Z-<rust-host-triple>/
 ├── bin/
-│   └── qgateway              # single static-ish binary, ~25 MiB
+│   ├── qaudit
+│   ├── qaudit-portal
+│   ├── qgateway              # standard gateway build
+│   └── qgateway-pkcs11       # gateway built with the pkcs11 feature
 ├── docs/
-│   ├── RUNBOOK.md            # this file
-│   └── HSM.md
+│   ├── RUNBOOK.md / RUNBOOK.pt-BR.md
+│   ├── HSM.md / HSM.pt-BR.md
+│   └── SMOKE_TEST.md / SMOKE_TEST.pt-BR.md
+├── README.md / README.pt-BR.md
 ├── LICENSE-AGPL
 ├── LICENSE-COMMERCIAL
+├── NOTICE
 ├── SPEC.md
 └── systemd/
     └── qgateway.service      # reference unit file
 ```
 
-Install:
+Before extraction or installation, verify every downloaded file against
+`SHA256SUMS`, then verify both detached-signature families with the public
+verification keys you have already trusted. Project anchors are tracked in
+[`release-keys/`](../release-keys/); confirm their fingerprints through an
+independent channel on first use. Keys downloaded alongside an artifact
+do not by themselves establish its authenticity. Confirm that
+`release-manifest.json` names the expected version, commit, Rust 1.95.0
+toolchain, target triple, build features, sizes, and hashes. The CycloneDX SBOM
+is `cofre-soberano-pq-vX.Y.Z.cdx.json`. Do not install an artifact when a hash
+or signature fails; checksums alone do not authenticate a release.
+
+To verify signatures with OpenSSL 3.5+ (ML-DSA) and Cosign 3.1.3,
+set the path to your already trusted anchors and run from the download
+directory. Start with `SHA256SUMS`; repeat both signature checks for every
+bundle, source archive, SBOM, and manifest before installation.
 
 ```bash
+COFRE_KEYS=/path/to/trusted/release-keys
+COFRE_ASSET=SHA256SUMS
+openssl pkeyutl -verify -pubin \
+  -inkey "$COFRE_KEYS/release-mldsa87-public.pem" \
+  -in "$COFRE_ASSET" -sigfile "$COFRE_ASSET.mldsa87.sig" \
+  -pkeyopt context-string:cofre-soberano-pq-release-v1
+cosign verify-blob --key "$COFRE_KEYS/release-sigstore-public.pem" \
+  --bundle "$COFRE_ASSET.sigstore.json" "$COFRE_ASSET"
+sha256sum -c SHA256SUMS
+```
+
+Install the standard gateway, or install the PKCS#11 variant under the
+operational name `qgateway` when HSM support is required:
+
+```bash
+# Create the service account before installing owned directories.
+id -u qgateway >/dev/null 2>&1 || \
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin qgateway
 sudo install -m 0755 bin/qgateway /usr/local/bin/qgateway
+# HSM deployment alternative:
+# sudo install -m 0755 bin/qgateway-pkcs11 /usr/local/bin/qgateway
+sudo install -m 0644 systemd/qgateway.service /etc/systemd/system/qgateway.service
 sudo install -d -o root -g root -m 0755 /etc/qgateway
 sudo install -d -o qgateway -g qgateway -m 0750 /var/lib/qgateway
 sudo install -d -o qgateway -g qgateway -m 0750 /var/log/qgateway
-```
-
-The `qgateway` system user must exist:
-
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin qgateway
 ```
 
 ### 2.2 Key generation
@@ -69,9 +145,10 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin qgateway
 Generate the daemon's transport identity (ML-DSA-87 keypair):
 
 ```bash
-sudo -u qgateway qgateway keygen \
+sudo qgateway keygen \
     --sk /etc/qgateway/daemon.skid \
     --pk /etc/qgateway/daemon.cspqid.pub
+sudo chown qgateway:qgateway /etc/qgateway/daemon.skid /etc/qgateway/daemon.cspqid.pub
 sudo chmod 0400 /etc/qgateway/daemon.skid
 sudo chmod 0444 /etc/qgateway/daemon.cspqid.pub
 ```
@@ -80,9 +157,10 @@ Generate the audit signer keypair (separate ML-DSA-87 keypair, used to
 sign audit log entries):
 
 ```bash
-sudo -u qgateway qgateway audit-keygen \
+sudo qgateway audit-keygen \
     --sk /etc/qgateway/audit.skid \
     --pk /etc/qgateway/audit.pub
+sudo chown qgateway:qgateway /etc/qgateway/audit.skid /etc/qgateway/audit.pub
 sudo chmod 0400 /etc/qgateway/audit.skid
 sudo chmod 0444 /etc/qgateway/audit.pub
 ```
@@ -140,7 +218,9 @@ audit_log = "/var/log/qgateway/alice.qa"
   refill_per_sec = 50
 ```
 
-Full schema reference is in SPEC.md §5. Key knobs:
+The schema is enforced by `qgateway-core` and its evolution is recorded in the
+SPEC sprint contracts. Validate the effective file with
+`qgateway validate --config <path>`. Key knobs:
 
 | Field | Purpose | Production guidance |
 |---|---|---|
@@ -154,47 +234,10 @@ Full schema reference is in SPEC.md §5. Key knobs:
 
 ### 2.5 systemd unit
 
-`/etc/systemd/system/qgateway.service`:
-
-```ini
-[Unit]
-Description=Cofre Soberano PQ gateway
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=qgateway
-Group=qgateway
-ExecStart=/usr/local/bin/qgateway run --config /etc/qgateway/sidecar.toml
-Restart=on-failure
-RestartSec=5s
-
-# Hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-ReadWritePaths=/var/log/qgateway /var/lib/qgateway
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-
-# Resource limits
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-```
+Install the reviewed `systemd/qgateway.service` from the binary bundle as shown
+in §2.1. The tracked and packaged file is authoritative; it includes the
+SIGHUP reload contract, network-online ordering, filesystem restrictions,
+process hardening, and resource limits.
 
 Enable + start:
 
@@ -675,7 +718,8 @@ versions. The procedure for a major version bump:
 4. Restart: `sudo systemctl start qgateway.service`
 5. Verify: §2.6
 
-For minor version bumps within the same major (e.g., v1.0.1 → v1.0.2),
+For compatible version bumps within the same major (for example, the current
+release → the next patch release),
 the same procedure works but downtime is shorter. The wire protocol
 (CSPQ v1) is stable across the v1.x line.
 

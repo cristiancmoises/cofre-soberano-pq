@@ -155,8 +155,9 @@ pub struct RotationRequest {
     /// Label for the new log's header.
     pub new_label: String,
     /// Reply with the rotation outcome — `Ok(())` on success, `Err(msg)` on
-    /// failure with the file unchanged. Optional: pass `None` for fire-and-
-    /// forget (signal-driven rotation).
+    /// failure. Failed preparation retains the live log; a published archive
+    /// may remain for recovery if switching the current path fails.
+    /// Optional: pass `None` for fire-and-forget (signal-driven rotation).
     pub ack: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 }
 
@@ -168,7 +169,8 @@ pub struct RotationRequest {
 /// Must be `Send + Sync` because the background task holds a reference to it
 /// across `.await` points while waiting on the rotation/event channels.
 pub trait SignerFactory: Send + Sync + 'static {
-    /// Build a new signer for the next log segment. Called once per rotation.
+    /// Build a signer with the current audit key. Rotation requests two:
+    /// one for its temporary snapshot and one for the next log segment.
     fn new_signer(&self) -> qaudit_core::Result<Box<dyn qaudit_core::Signer>>;
 }
 
@@ -595,40 +597,61 @@ async fn perform_rotation(
         .new_signer()
         .map_err(|e| format!("signer factory failed: {e}"))?;
 
-    // Take ownership of `log` temporarily to call rotate_to (which consumes self).
-    // We use mem::replace with a placeholder; the placeholder is overwritten with
-    // the new log immediately after.
-    let placeholder =
-        make_placeholder_log().map_err(|e| format!("internal: placeholder log: {e}"))?;
-    let old_log = std::mem::replace(log, placeholder);
+    // Prepare the rotation on a snapshot. rotate_to consumes its source, and
+    // either signing or persistence can fail. Keep the live log and its signer
+    // intact until both segments have been persisted successfully.
+    let mut snapshot = Vec::new();
+    log.save_to(&mut snapshot)
+        .map_err(|e| format!("snapshot current log: {e}"))?;
+    let mut candidate = AuditLog::read_from(std::io::Cursor::new(snapshot))
+        .map_err(|e| format!("read rotation snapshot: {e}"))?;
+    candidate
+        .bind_signer(
+            factory
+                .new_signer()
+                .map_err(|e| format!("snapshot signer: {e}"))?,
+        )
+        .map_err(|e| format!("bind snapshot signer: {e}"))?;
 
-    let (sealed_old, new_open) = old_log
+    let (sealed_old, new_open) = candidate
         .rotate_to(new_signer, req.new_label.clone(), "")
         .map_err(|e| format!("rotate_to: {e}"))?;
 
-    // Persist sealed old log to archive_path, new log to current_log_path.
+    // Publish the archive without clobbering a path created after the initial
+    // existence check. The complete archive is durable before switching the
+    // current path to the new segment.
+    let archive_parent = req
+        .archive_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut archive = tempfile::NamedTempFile::new_in(archive_parent)
+        .map_err(|e| format!("stage archive {}: {e}", req.archive_path.display()))?;
     sealed_old
-        .save(&req.archive_path)
-        .map_err(|e| format!("save sealed log to {}: {e}", req.archive_path.display()))?;
+        .save_to(std::io::BufWriter::new(archive.as_file_mut()))
+        .map_err(|e| format!("write archive {}: {e}", req.archive_path.display()))?;
+    archive
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("sync archive: {e}"))?;
+    archive
+        .persist_noclobber(&req.archive_path)
+        .map_err(|e| format!("publish archive {}: {e}", req.archive_path.display()))?;
+    #[cfg(unix)]
+    std::fs::File::open(archive_parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| format!("sync archive directory: {e}"))?;
     new_open
         .save(current_log_path)
         .map_err(|e| format!("save new log to {}: {e}", current_log_path.display()))?;
 
-    // Install the new log in place of the placeholder.
+    // Commit the new in-memory log only after successful persistence.
     *log = new_open;
     metrics
         .inner()
         .audit_rotations
         .fetch_add(1, Ordering::Relaxed);
     Ok(())
-}
-
-/// Throwaway log used only to satisfy mem::replace ownership during rotation.
-/// Never written to disk, never seen by callers — replaced with the real new
-/// log within microseconds.
-fn make_placeholder_log() -> qaudit_core::Result<AuditLog> {
-    let kp = qaudit_core::KeyPair::generate()?;
-    AuditLog::create_with_label(kp, "__placeholder")
 }
 
 async fn flush(
@@ -756,6 +779,78 @@ mod tests {
             let kp = KeyPair::from_parts(self.0.clone(), self.1.clone());
             Ok(Box::new(kp))
         }
+    }
+
+    #[tokio::test]
+    async fn rotation_io_failure_preserves_live_history_and_signer() {
+        let tmp = TempDir::new().unwrap();
+        let current = tmp.path().join("audit.qa");
+        let kp = KeyPair::generate().unwrap();
+        let factory = CloneKeyFactory(kp.public().clone(), kp.secret().clone());
+        let mut log = AuditLog::create_with_label(kp, "original").unwrap();
+        log.append(AuditEvent::builder().action("before").build())
+            .unwrap();
+        log.save(&current).unwrap();
+        let original_id = log.header().log_id;
+        let original_root = log.current_root();
+        let original_file = std::fs::read(&current).unwrap();
+        let req = RotationRequest {
+            archive_path: tmp.path().join("missing-directory/archive.qa"),
+            new_label: "new-segment".into(),
+            ack: None,
+        };
+        let metrics = MetricsRegistry::new("rotation-failure");
+        assert!(
+            perform_rotation(&mut log, &current, &req, Some(&factory), &metrics)
+                .await
+                .is_err()
+        );
+        assert_eq!(log.header().log_id, original_id);
+        assert_eq!(log.current_root(), original_root);
+        assert_eq!(std::fs::read(&current).unwrap(), original_file);
+        // An ordinary batch after a failed rotation must extend the original
+        // history with the original signing key.
+        log.append(AuditEvent::builder().action("after failure").build())
+            .unwrap();
+        log.save(&current).unwrap();
+        let reopened = AuditLog::open(&current).unwrap();
+        assert_eq!(reopened.len(), 2);
+        assert_eq!(reopened.header().log_id, original_id);
+        reopened.verify().unwrap();
+    }
+
+    #[tokio::test]
+    async fn rotation_current_path_failure_keeps_live_log_writable() {
+        let tmp = TempDir::new().unwrap();
+        let current = tmp.path().join("directory-instead-of-file");
+        std::fs::create_dir(&current).unwrap();
+        let kp = KeyPair::generate().unwrap();
+        let factory = CloneKeyFactory(kp.public().clone(), kp.secret().clone());
+        let mut log = AuditLog::create_with_label(kp, "original").unwrap();
+        log.append(AuditEvent::builder().action("before").build())
+            .unwrap();
+        let original_id = log.header().log_id;
+        let req = RotationRequest {
+            archive_path: tmp.path().join("archive.qa"),
+            new_label: "new-segment".into(),
+            ack: None,
+        };
+        assert!(perform_rotation(
+            &mut log,
+            &current,
+            &req,
+            Some(&factory),
+            &MetricsRegistry::new("failure")
+        )
+        .await
+        .is_err());
+        assert_eq!(log.header().log_id, original_id);
+        assert_eq!(log.len(), 1);
+        log.append(AuditEvent::builder().action("after").build())
+            .unwrap();
+        log.verify().unwrap();
+        // The successfully published archive is retained for operator recovery.
+        AuditLog::open(&req.archive_path).unwrap().verify().unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

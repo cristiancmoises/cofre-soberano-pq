@@ -124,6 +124,25 @@ pub struct LogHeader {
     pub prev_log_final_root: Option<Hash>,
 }
 
+fn validate_header(header: &LogHeader) -> Result<()> {
+    if header.wire_version != WIRE_VERSION {
+        return Err(Error::VersionMismatch {
+            found: header.wire_version,
+            supported: WIRE_VERSION,
+        });
+    }
+    if header.suite != SUITE_ID {
+        return Err(Error::BadHeader(format!(
+            "unsupported suite: {}",
+            header.suite
+        )));
+    }
+    // Deserialization bypasses PublicKey::from_bytes. Validate even an empty
+    // log so malformed keys never reach fingerprint formatting or signing.
+    PublicKey::from_bytes(header.pubkey.as_bytes())?;
+    Ok(())
+}
+
 /// Helper module for serializing `Option<[u8; 32]>` as bytes in CBOR.
 /// Without this, `Option<[u8; 32]>` serializes as an array of integers,
 /// which breaks the bytes-everywhere convention used elsewhere in the
@@ -337,6 +356,9 @@ impl AuditLog {
                 "signer public key does not match log header pubkey".into(),
             ));
         }
+        // Opening a log decodes it; attaching a signing capability must also
+        // validate the history before callers can extend a tampered chain.
+        self.verify()?;
         self.signer = Some(Box::new(signer));
         Ok(())
     }
@@ -360,7 +382,11 @@ impl AuditLog {
 
         let prev_root = self.tree.root();
         let event_hash = event.content_hash();
-        let new_root = self.tree.append(&event_hash);
+        // Signing can fail (for example, when an HSM is unavailable). Commit
+        // the frontier only after signing succeeds so a retry cannot inherit
+        // an unsigned leaf. The frontier clone costs O(log N) hashes.
+        let mut next_tree = self.tree.clone();
+        let new_root = next_tree.append(&event_hash);
         let index = (self.entries.len()) as u64;
 
         let payload = payload_bytes(
@@ -380,6 +406,7 @@ impl AuditLog {
             new_root,
             signature,
         };
+        self.tree = next_tree;
         self.entries.push(entry);
         Ok(self.entries.last().expect("just pushed"))
     }
@@ -394,12 +421,7 @@ impl AuditLog {
     /// Verify against an externally-supplied header (e.g. when reading a log
     /// from disk in verification-only mode).
     fn verify_with_pubkey(header: &LogHeader, entries: &[LogEntry]) -> Result<()> {
-        if header.wire_version != WIRE_VERSION {
-            return Err(Error::VersionMismatch {
-                found: header.wire_version,
-                supported: WIRE_VERSION,
-            });
-        }
+        validate_header(header)?;
 
         let mut tree = MerkleTree::new();
         let mut expected_prev: Hash = [0u8; 32];
@@ -452,14 +474,37 @@ impl AuditLog {
         Ok(())
     }
 
-    /// Write the log to a file. Truncates an existing file at the path.
+    /// Atomically replace a log file after writing and syncing its contents.
+    /// Existing regular-file permissions are preserved; new files are private.
+    /// Symlinks and other nonregular destinations are rejected.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
-        self.save_to(std::io::BufWriter::new(f))
+        let path = path.as_ref();
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let permissions = match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() => Some(metadata.permissions()),
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "audit log destination must be a regular file",
+                )
+                .into())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        self.save_to(std::io::BufWriter::new(temporary.as_file_mut()))?;
+        if let Some(permissions) = permissions {
+            temporary.as_file().set_permissions(permissions)?;
+        }
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|e| Error::Io(e.error))?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
     }
 
     /// Open a log from disk in verification-only mode (no signing key bound).
@@ -482,41 +527,22 @@ impl AuditLog {
         // ciborium::from_reader stops at end of value; remember position to
         // continue reading entries.
         let header: LogHeader = ciborium::from_reader(&mut input)?;
-        if header.wire_version != WIRE_VERSION {
-            return Err(Error::VersionMismatch {
-                found: header.wire_version,
-                supported: WIRE_VERSION,
-            });
-        }
+        validate_header(&header)?;
 
         let mut entries: Vec<LogEntry> = Vec::new();
         loop {
-            // Peek: try to read another entry. EOF is fine.
+            // Only EOF before the first byte of an entry is clean. A CBOR
+            // decoder's UnexpectedEof may mean a partially written or
+            // maliciously truncated entry and must never discard that tail.
             let pos = input.stream_position()?;
-            match ciborium::from_reader::<LogEntry, _>(&mut input) {
-                Ok(e) => entries.push(e),
-                Err(ciborium::de::Error::Io(io_err))
-                    if io_err.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    // Clean EOF after the last entry.
-                    break;
-                }
-                Err(e) => {
-                    // If we made no progress, it's a clean end too.
-                    let now = input.stream_position()?;
-                    if now == pos {
-                        break;
-                    }
-                    return Err(Error::Cbor(format!("{e:?}")));
-                }
+            let mut first = [0u8; 1];
+            match input.read_exact(&mut first) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e.into()),
             }
-            // If we read 0 bytes (degenerate case), bail.
-            let after = input.stream_position()?;
-            if after == pos {
-                break;
-            }
-            // Hop over any sentinel bytes? Not in our format. Continue.
-            input.seek(SeekFrom::Start(after))?;
+            input.seek(SeekFrom::Start(pos))?;
+            entries.push(ciborium::from_reader(&mut input)?);
         }
 
         // Rebuild MMR from entries — needed if the caller wants to append more.
@@ -848,6 +874,136 @@ mod tests {
     }
 
     #[test]
+    fn truncated_final_entry_is_rejected_at_every_byte() {
+        let (_kp, mut log) = make_log();
+        log.append(evt("first")).unwrap();
+        let mut prefix = Vec::new();
+        log.save_to(&mut prefix).unwrap();
+        log.append(evt("second")).unwrap();
+        let mut complete = Vec::new();
+        log.save_to(&mut complete).unwrap();
+
+        // Complete entries are a valid prefix; detecting removal of whole
+        // entries requires a trusted external checkpoint of the final root.
+        AuditLog::read_from(std::io::Cursor::new(&prefix)).unwrap();
+        for end in prefix.len() + 1..complete.len() {
+            assert!(
+                AuditLog::read_from(std::io::Cursor::new(&complete[..end])).is_err(),
+                "accepted a partially encoded entry ending at byte {end}"
+            );
+        }
+        AuditLog::read_from(std::io::Cursor::new(&complete))
+            .unwrap()
+            .verify()
+            .unwrap();
+    }
+
+    #[test]
+    fn trailing_malformed_cbor_is_rejected() {
+        let (_kp, log) = make_log();
+        let mut bytes = Vec::new();
+        log.save_to(&mut bytes).unwrap();
+        bytes.push(0xff); // CBOR break outside an indefinite-length item.
+        assert!(AuditLog::read_from(std::io::Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
+    fn atomic_save_replaces_file_without_overwriting_hardlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.qa");
+        let snapshot = dir.path().join("snapshot.qa");
+        let (_kp, mut log) = make_log();
+        log.append(evt("before")).unwrap();
+        log.save(&path).unwrap();
+        std::fs::hard_link(&path, &snapshot).unwrap();
+        log.append(evt("after")).unwrap();
+        log.save(&path).unwrap();
+        assert_eq!(AuditLog::open(&path).unwrap().len(), 2);
+        assert_eq!(AuditLog::open(&snapshot).unwrap().len(), 1);
+        AuditLog::open(&path).unwrap().verify().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_save_rejects_symlink_and_preserves_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.qa");
+        let link = dir.path().join("link.qa");
+        let (_kp, log) = make_log();
+        log.save(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        log.save(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        symlink(&path, &link).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(log.save(&link).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn failed_signature_leaves_log_unchanged_and_retry_verifies() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        struct FallibleSigner {
+            key: KeyPair,
+            fail: Arc<AtomicBool>,
+        }
+
+        impl Signer for FallibleSigner {
+            fn sign(&self, message: &[u8]) -> Result<Signature> {
+                if self.fail.load(Ordering::Relaxed) {
+                    Err(Error::Internal("injected signer outage".into()))
+                } else {
+                    self.key.sign(message)
+                }
+            }
+
+            fn public_key(&self) -> &PublicKey {
+                self.key.public()
+            }
+        }
+
+        let fail = Arc::new(AtomicBool::new(false));
+        let signer = FallibleSigner {
+            key: KeyPair::generate().unwrap(),
+            fail: fail.clone(),
+        };
+        let mut log = AuditLog::create_with_signer(signer, "fallible").unwrap();
+        log.append(evt("before")).unwrap();
+        let original_root = log.current_root();
+        fail.store(true, Ordering::Relaxed);
+        assert!(log.append(evt("failed")).is_err());
+        assert_eq!(log.len(), 1);
+        assert_eq!(log.current_root(), original_root);
+        log.verify().unwrap();
+        fail.store(false, Ordering::Relaxed);
+        log.append(evt("retry")).unwrap();
+        assert_eq!(log.len(), 2);
+        log.verify().unwrap();
+    }
+
+    #[test]
+    fn binding_signer_rejects_tampered_history() {
+        let (kp, mut log) = make_log();
+        log.append(evt("original")).unwrap();
+        log.entries[0].event = evt("tampered");
+        let mut bytes = Vec::new();
+        log.save_to(&mut bytes).unwrap();
+        let mut reopened = AuditLog::read_from(std::io::Cursor::new(bytes)).unwrap();
+        assert!(reopened.bind_keypair(kp).is_err());
+        assert!(reopened.append(evt("must not extend")).is_err());
+    }
+
+    #[test]
     fn tampered_event_fails_verify() {
         let (_kp, mut log) = make_log();
         for i in 0..5 {
@@ -949,6 +1105,27 @@ mod tests {
         let mut bytes = std::io::Cursor::new(vec![0u8; 32]);
         let err = AuditLog::read_from(&mut bytes).unwrap_err();
         assert!(matches!(err, Error::BadHeader(_)));
+    }
+
+    #[test]
+    fn invalid_empty_log_header_is_rejected() {
+        let (_kp, mut log) = make_log();
+        log.header.suite = "unsupported-suite".into();
+        assert!(log.verify().is_err());
+        let mut bytes = Vec::new();
+        log.save_to(&mut bytes).unwrap();
+        assert!(AuditLog::read_from(std::io::Cursor::new(bytes)).is_err());
+
+        log.header.suite = SUITE_ID.into();
+        let malformed =
+            std::collections::BTreeMap::from([("bytes", serde_bytes::ByteBuf::from(vec![0u8; 1]))]);
+        let mut key_bytes = Vec::new();
+        ciborium::into_writer(&malformed, &mut key_bytes).unwrap();
+        log.header.pubkey = ciborium::from_reader(key_bytes.as_slice()).unwrap();
+        assert!(log.verify().is_err());
+        let mut bytes = Vec::new();
+        log.save_to(&mut bytes).unwrap();
+        assert!(AuditLog::read_from(std::io::Cursor::new(bytes)).is_err());
     }
 
     #[test]

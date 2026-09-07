@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="{lang}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{viewer} · Cofre Soberano PQ</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/?lang={lang}"><span class="mark" aria-hidden="true">Q</span><span>Cofre Soberano PQ<small>QAudit Portal</small></span></a>
+  <a class="language" lang="{lang_other}" hreflang="{lang_other}" href="/?offset={offset}&amp;limit={limit}&amp;lang={lang_other}">{lang_label}</a>
+</header>
+<main>
+  <div class="eyebrow">{subtitle}</div>
+  <section class="heading" aria-labelledby="title"><div><h1 id="title">{viewer}</h1><p class="log-label">{label}</p></div>{badge}</section>
+  {err}
+  <aside class="notice"><strong>{snapshot_title}</strong><p>{snapshot}</p></aside>
+  <section class="cards" aria-label="{details_label}">
+    <div class="card"><span>{entries_label}</span><strong class="count">{entries}</strong><small>BLAKE3 · Merkle Mountain Range</small></div>
+    <div class="card"><span>{signature_label}</span><strong>ML-DSA-87</strong><small>{signature_note}</small></div>
+    <div class="card"><span>{key_label}</span><strong class="key-status">{key_status}</strong><small>{key_note}</small></div>
+  </section>
+  <section class="panel" aria-labelledby="details-title"><h2 id="details-title">{details_label}</h2>
+    <p class="metadata-note">{metadata_note}</p>
+    <dl class="details">
+      <dt>{file_label}</dt><dd><code>{log_path}</code></dd>
+      <dt>Log ID</dt><dd><code>{log_id}</code></dd>
+      <dt>{created_label}</dt><dd>{created_at}</dd>
+      <dt>Suite / wire</dt><dd><code>{suite}</code> / v{wire_version}</dd>
+      <dt>{pk_label}</dt><dd><code>{pk_prefix}…</code></dd>
+      <dt>{root_label}</dt><dd class="merkle"><code>{root}</code></dd>
+    </dl>
+  </section>
+  <section class="panel events" aria-labelledby="events-title">
+    <div class="section-heading"><h2 id="events-title">{table_label}</h2><span>{from}–{to} {of_label} {entries}</span></div>
+    <div class="table-scroll" role="region" aria-label="{table_label}" tabindex="0">
+      <table><thead><tr><th scope="col">#</th><th scope="col">{timestamp_label}</th><th scope="col">{actor_label}</th><th scope="col">{action_label}</th><th scope="col">{resource_label}</th><th scope="col">{outcome_label}</th><th scope="col">{meta_label}</th><th scope="col">{root_head_label}</th></tr></thead><tbody>{rows}</tbody></table>
+    </div>
+    <nav class="pagination" aria-label="{pagination_label}">{pagination}</nav>
+  </section>
+</main>
+<footer><span>qaudit-portal v{ver} · {readonly}</span><nav><a href="/api/entries">{api_label}</a><a href="/api/verify">{verify_label}</a><a href="/api/pubkey" download="audit.pk">{pubkey_label}</a></nav></footer>
+</body>
+</html>

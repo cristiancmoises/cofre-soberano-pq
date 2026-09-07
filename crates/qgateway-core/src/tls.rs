@@ -20,7 +20,7 @@
 //! patch this module.
 
 use anyhow::{anyhow, Context, Result};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use std::path::Path;
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
@@ -336,46 +336,18 @@ pub fn build_reloadable_multi_sni_acceptor(
 }
 
 fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let pem = std::fs::read(path)?;
-    let mut rd: &[u8] = &pem;
-    let mut out: Vec<CertificateDer<'static>> = Vec::new();
-    for entry in rustls_pemfile::certs(&mut rd) {
-        out.push(entry?);
-    }
-    Ok(out)
+    CertificateDer::pem_file_iter(path)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("parsing TLS certificate PEM")
 }
 
 fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let pem = std::fs::read(path)?;
-
-    // PKCS#8 first.
-    {
-        let mut rd: &[u8] = &pem;
-        let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut rd).collect();
-        if let Some(k) = keys.into_iter().next() {
-            return Ok(PrivateKeyDer::Pkcs8(k?));
-        }
-    }
-    // RSA (PKCS#1)
-    {
-        let mut rd: &[u8] = &pem;
-        let keys: Vec<_> = rustls_pemfile::rsa_private_keys(&mut rd).collect();
-        if let Some(k) = keys.into_iter().next() {
-            return Ok(PrivateKeyDer::Pkcs1(k?));
-        }
-    }
-    // SEC1 (EC)
-    {
-        let mut rd: &[u8] = &pem;
-        let keys: Vec<_> = rustls_pemfile::ec_private_keys(&mut rd).collect();
-        if let Some(k) = keys.into_iter().next() {
-            return Ok(PrivateKeyDer::Sec1(k?));
-        }
-    }
-    Err(anyhow!(
-        "no PKCS#8, PKCS#1, or SEC1 private key found in {}",
-        path.display()
-    ))
+    PrivateKeyDer::from_pem_file(path).with_context(|| {
+        format!(
+            "parsing PKCS#8, PKCS#1, or SEC1 private key in {}",
+            path.display()
+        )
+    })
 }
 
 // ============================================================================
@@ -776,14 +748,7 @@ sZkwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAxbR0/Q8B/I8z
         let cert = params.self_signed(&key).expect("self-sign");
         let cert_der = cert.der().clone();
         let key_pem = key.serialize_pem();
-        let mut reader: &[u8] = key_pem.as_bytes();
-        let key_der_iter = rustls_pemfile::pkcs8_private_keys(&mut reader);
-        let key_der_owned = key_der_iter
-            .into_iter()
-            .next()
-            .and_then(|r| r.ok())
-            .expect("pkcs8 key parse");
-        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(key_der_owned);
+        let key_der = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).expect("pkcs8 key parse");
         let signer = rustls::crypto::ring::sign::any_supported_type(&key_der)
             .expect("ring accepts the rcgen key");
         Arc::new(CertifiedKey::new(vec![cert_der], signer))

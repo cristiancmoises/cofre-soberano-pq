@@ -1,4 +1,4 @@
-# Cofre Soberano PQ — Operator Runbook
+# Cofre Soberano PQ — Manual operacional
 
 *Runbook operacional (pt-BR). O [RUNBOOK.md](RUNBOOK.md) em inglês prevalece em caso de divergência.*
 
@@ -7,7 +7,46 @@ sidecar qgateway. Este documento é o complemento **voltado ao operador**
 do `SPEC.md` (que é a especificação de projeto). Se você está implantando
 ou executando o gateway em produção, leia isto primeiro.
 
-Para custódia de chaves apoiada em HSM, consulte `HSM.md`.
+Para custódia de chaves apoiada em HSM, consulte [HSM.pt-BR.md](HSM.pt-BR.md).
+
+
+## Verificação de auditoria e acesso ao portal
+
+Execute `qaudit verify --log audit.qa --pk audit.pk` com uma chave cuja
+procedência foi confirmada fora do arquivo. `qaudit inspect` apenas exibe o
+conteúdo; sua saída não comprova integridade. O XML exportado usa o esquema
+próprio do projeto, sem aprovação regulatória.
+
+Guarde fora do host assinante a raiz final, o número de entradas e o inventário
+ordenado dos segmentos. Entradas completas removidas do final e versões
+antigas válidas exigem esses checkpoints para detecção. Rótulos e datas do
+cabeçalho e `appended_at` não são autenticados no wire-v1. O horário de um
+evento assinado não substitui uma fonte de tempo confiável.
+
+O portal carrega um retrato somente leitura na inicialização; `/api/verify`
+verifica esse retrato. Reinicie-o depois de selecionar um novo arquivo ou uma
+cópia consistente do registro. `/healthz` indica apenas que o processo atende
+HTTP. O portal não tem autenticação: mantenha o endereço de loopback e use
+um túnel SSH ou proxy autenticado para acesso remoto.
+
+```bash
+qaudit-portal --log audit.qa --pk audit.pk --listen 127.0.0.1:8080
+# Interface em português: http://127.0.0.1:8080/?lang=pt-BR
+# Paginação HTML: ?lang=pt-BR&offset=0&limit=50 (máximo 200)
+# Paginação JSON: /api/entries?offset=0&limit=100 (máximo 1000)
+```
+
+![Portal de auditoria em português](../screenshots/portal-pt-BR.png)
+
+Mantenha **um único escritor por arquivo `.qa`**, incluindo CLIs e daemons.
+A substituição atômica protege contra gravações parciais; não implementa
+exclusão mútua entre processos. Escritores independentes precisam de
+serialização operacional para evitar perda de atualizações.
+
+Antes de `qaudit rotate`, pare o escritor do registro e faça backup dos dois
+segmentos. A rotação publica o novo arquivo antes de substituir o antigo;
+essas duas gravações não formam uma transação única. Em caso de erro, preserve
+ambos os arquivos e verifique o encadeamento antes de retomar a escrita.
 
 ---
 
@@ -33,35 +72,73 @@ com o artefato de auditoria `.audit.pub`.
 
 ### 2.1 Distribuição do binário
 
-O tarball de release contém:
+Cada release publica um bundle binário identificado pela plataforma, um
+arquivo-fonte, um SBOM, um manifesto legível por máquina, `SHA256SUMS` e
+assinaturas destacadas ML-DSA-87 e Sigstore. O bundle binário contém:
 
 ```
-qgateway/
+cofre-soberano-pq-vX.Y.Z-<rust-host-triple>/
 ├── bin/
-│   └── qgateway              # single static-ish binary, ~25 MiB
+│   ├── qaudit
+│   ├── qaudit-portal
+│   ├── qgateway              # build padrão do gateway
+│   └── qgateway-pkcs11       # gateway compilado com a feature pkcs11
 ├── docs/
-│   ├── RUNBOOK.md            # this file
-│   └── HSM.md
+│   ├── RUNBOOK.md / RUNBOOK.pt-BR.md
+│   ├── HSM.md / HSM.pt-BR.md
+│   └── SMOKE_TEST.md / SMOKE_TEST.pt-BR.md
+├── README.md / README.pt-BR.md
 ├── LICENSE-AGPL
 ├── LICENSE-COMMERCIAL
+├── NOTICE
 ├── SPEC.md
 └── systemd/
     └── qgateway.service      # reference unit file
 ```
 
-Instalar:
+Antes de extrair ou instalar, verifique cada arquivo baixado contra
+`SHA256SUMS` e depois verifique as duas famílias de assinatura destacada com as
+chaves públicas previamente confiáveis. As âncoras do projeto estão em
+[`release-keys/`](../release-keys/); confirme seus fingerprints por um canal
+independente no primeiro uso. Chaves baixadas ao lado do próprio artefato
+não estabelecem, sozinhas, sua autenticidade. Confirme
+que `release-manifest.json` registra a versão, o commit, o toolchain Rust
+1.95.0, o target triple, as features de build, tamanhos e hashes esperados. O
+SBOM CycloneDX é `cofre-soberano-pq-vX.Y.Z.cdx.json`. Não instale um artefato
+se um hash ou assinatura falhar; checksums, sozinhos, não autenticam uma
+release.
+
+Para verificar uma assinatura com OpenSSL 3.5+ (ML-DSA) e Cosign 3.1.3,
+ajuste o caminho das âncoras já confiáveis e execute no diretório dos downloads.
+Comece por `SHA256SUMS`; repita as duas verificações para cada bundle, arquivo
+fonte, SBOM e manifesto antes de instalar.
 
 ```bash
+COFRE_KEYS=/path/to/trusted/release-keys
+COFRE_ASSET=SHA256SUMS
+openssl pkeyutl -verify -pubin \
+  -inkey "$COFRE_KEYS/release-mldsa87-public.pem" \
+  -in "$COFRE_ASSET" -sigfile "$COFRE_ASSET.mldsa87.sig" \
+  -pkeyopt context-string:cofre-soberano-pq-release-v1
+cosign verify-blob --key "$COFRE_KEYS/release-sigstore-public.pem" \
+  --bundle "$COFRE_ASSET.sigstore.json" "$COFRE_ASSET"
+sha256sum -c SHA256SUMS
+```
+
+Instale o gateway padrão ou, quando houver necessidade de HSM, instale a
+variante PKCS#11 sob o nome operacional `qgateway`:
+
+```bash
+# Crie a conta de serviço antes de instalar diretórios com esse proprietário.
+id -u qgateway >/dev/null 2>&1 || \
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin qgateway
 sudo install -m 0755 bin/qgateway /usr/local/bin/qgateway
+# Alternativa para implantação com HSM:
+# sudo install -m 0755 bin/qgateway-pkcs11 /usr/local/bin/qgateway
+sudo install -m 0644 systemd/qgateway.service /etc/systemd/system/qgateway.service
 sudo install -d -o root -g root -m 0755 /etc/qgateway
 sudo install -d -o qgateway -g qgateway -m 0750 /var/lib/qgateway
 sudo install -d -o qgateway -g qgateway -m 0750 /var/log/qgateway
-```
-
-O usuário de sistema `qgateway` deve existir:
-
-```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin qgateway
 ```
 
 ### 2.2 Geração de chaves
@@ -69,9 +146,10 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin qgateway
 Gere a identidade de transporte do daemon (par de chaves ML-DSA-87):
 
 ```bash
-sudo -u qgateway qgateway keygen \
+sudo qgateway keygen \
     --sk /etc/qgateway/daemon.skid \
     --pk /etc/qgateway/daemon.cspqid.pub
+sudo chown qgateway:qgateway /etc/qgateway/daemon.skid /etc/qgateway/daemon.cspqid.pub
 sudo chmod 0400 /etc/qgateway/daemon.skid
 sudo chmod 0444 /etc/qgateway/daemon.cspqid.pub
 ```
@@ -80,9 +158,10 @@ Gere o par de chaves do signatário de auditoria (par de chaves ML-DSA-87 separa
 assinar as entradas do registro de auditoria):
 
 ```bash
-sudo -u qgateway qgateway audit-keygen \
+sudo qgateway audit-keygen \
     --sk /etc/qgateway/audit.skid \
     --pk /etc/qgateway/audit.pub
+sudo chown qgateway:qgateway /etc/qgateway/audit.skid /etc/qgateway/audit.pub
 sudo chmod 0400 /etc/qgateway/audit.skid
 sudo chmod 0444 /etc/qgateway/audit.pub
 ```
@@ -140,7 +219,9 @@ audit_log = "/var/log/qgateway/alice.qa"
   refill_per_sec = 50
 ```
 
-A referência completa do schema está em SPEC.md §5. Principais parâmetros:
+O schema é aplicado por `qgateway-core`, e sua evolução está registrada nos
+contratos de sprint do SPEC. Valide o arquivo efetivo com
+`qgateway validate --config <caminho>`. Principais parâmetros:
 
 | Campo | Propósito | Orientação de produção |
 |---|---|---|
@@ -154,47 +235,11 @@ A referência completa do schema está em SPEC.md §5. Principais parâmetros:
 
 ### 2.5 Unidade systemd
 
-`/etc/systemd/system/qgateway.service`:
-
-```ini
-[Unit]
-Description=Cofre Soberano PQ gateway
-After=network.target
-Wants=network.target
-
-[Service]
-Type=simple
-User=qgateway
-Group=qgateway
-ExecStart=/usr/local/bin/qgateway run --config /etc/qgateway/sidecar.toml
-Restart=on-failure
-RestartSec=5s
-
-# Hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-ReadWritePaths=/var/log/qgateway /var/lib/qgateway
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-
-# Resource limits
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-```
+Instale o arquivo revisado `systemd/qgateway.service` do bundle binário como
+mostrado na §2.1. O arquivo versionado e empacotado é a referência normativa;
+ele inclui o contrato de reload por SIGHUP, ordenação por network-online,
+restrições de sistema de arquivos, hardening do processo e limites de
+recursos.
 
 Habilitar + iniciar:
 
@@ -675,7 +720,8 @@ principais. O procedimento para um salto de versão principal:
 4. Reinicie: `sudo systemctl start qgateway.service`
 5. Verifique: §2.6
 
-Para saltos de versão menor dentro da mesma principal (por exemplo, v1.0.1 → v1.0.2),
+Para saltos compatíveis dentro da mesma versão principal (por exemplo, da
+release atual para a próxima release patch),
 o mesmo procedimento funciona, mas o tempo de indisponibilidade é menor. O protocolo de fio
 (CSPQ v1) é estável ao longo da linha v1.x.
 

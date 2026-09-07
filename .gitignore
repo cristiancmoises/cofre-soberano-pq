@@ -1,4 +1,6 @@
 target/
+/dist/
+/.cofre-release-work.*/
 *.qa
 
 # Audit-signer key material — never commit. Covers v1.0.0 fixed names

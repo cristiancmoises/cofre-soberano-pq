@@ -204,11 +204,6 @@ where
     loop {
         let pt = match cspq_r.recv_record().await {
             Ok(pt) => pt,
-            Err(qtransport_cspq::Error::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                debug!("cspq→local peer hard-EOF after {total} bytes");
-                let _ = local_w.shutdown().await;
-                return Ok(total);
-            }
             Err(e) => {
                 warn!("recv_record failed: {e}");
                 return Err(std::io::Error::other(e));
@@ -222,5 +217,51 @@ where
         local_w.write_all(&pt).await?;
         total = total.saturating_add(pt.len() as u64);
         bump(&metrics, bucket, pt.len() as u64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qtransport_cspq::{accept, connect, IdentityKey, PeerPolicy};
+
+    #[tokio::test]
+    async fn pump_rejects_unauthenticated_peer_close() {
+        let client_id = IdentityKey::generate().unwrap();
+        let server_id = IdentityKey::generate().unwrap();
+        let client_policy = PeerPolicy::single(server_id.public().clone());
+        let server_policy = PeerPolicy::single(client_id.public().clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_tcp = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server_tcp, _) = listener.accept().await.unwrap();
+        let (client, server) = tokio::join!(
+            connect(client_tcp, &client_id, &client_policy),
+            accept(server_tcp, &server_id, &server_policy),
+        );
+        let mut client = client.unwrap();
+        client.send_record(b"before truncation").await.unwrap();
+        drop(client); // No authenticated EOF record.
+        let (reader, _writer) = server.unwrap().split();
+        let (local_writer, mut local_reader) = tokio::io::duplex(1024);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pump_cspq_to_local(
+                reader,
+                local_writer,
+                MetricsRegistry::new("test"),
+                Bucket::C2s,
+            ),
+        )
+        .await
+        .expect("truncated peer must terminate the pump");
+        assert!(
+            result.is_err(),
+            "truncation must not be recorded as a clean session"
+        );
+        let mut delivered = Vec::new();
+        local_reader.read_to_end(&mut delivered).await.unwrap();
+        assert_eq!(delivered, b"before truncation");
     }
 }

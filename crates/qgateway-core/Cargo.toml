@@ -15,7 +15,6 @@ qtransport-cspq  = { path = "../qtransport-cspq" }
 tokio            = { workspace = true }
 tokio-rustls     = { workspace = true }
 rustls           = { workspace = true }
-rustls-pemfile   = { workspace = true }
 toml             = { workspace = true }
 serde            = { workspace = true }
 chrono           = { workspace = true }
@@ -24,9 +23,9 @@ thiserror        = { workspace = true }
 hex              = { workspace = true }
 tracing          = { workspace = true }
 arc-swap         = { workspace = true }
+tempfile         = "3"
 
 [dev-dependencies]
-tempfile         = "3"
 tokio            = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time", "sync", "test-util"] }
 # Sprint 6.5: rcgen for generating self-signed certs in the SNI dispatch
 # integration test. Dev-only; never compiled into release binaries.

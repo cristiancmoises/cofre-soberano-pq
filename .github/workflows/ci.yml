@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_AUDIT_VERSION: 0.22.2
+
+jobs:
+  validate:
+    name: ${{ matrix.gate }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - fmt
+          - clippy
+          - test
+          - pkcs11
+          - build
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install the repository toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          toolchain="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
+
+      - name: Run ${{ matrix.gate }} gate
+        run: ./scripts/ci.sh "${{ matrix.gate }}"
+
+  audit:
+    name: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install the repository toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          toolchain="$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
+
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: Run dependency audit
+        run: ./scripts/ci.sh audit

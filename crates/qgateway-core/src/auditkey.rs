@@ -32,8 +32,11 @@ pub const AUDIT_SK_MAGIC: &[u8; 8] = b"AUDITSK0";
 /// `sk_path` is written mode 0600 on unix.
 pub fn generate(sk_path: &Path, pk_path: &Path) -> Result<KeyPair> {
     let kp = KeyPair::generate().context("ML-DSA-87 keygen")?;
-    save_pub(pk_path, kp.public())?;
-    save_secret(sk_path, &kp)?;
+    let mut public = Vec::from(AUDIT_PK_MAGIC.as_slice());
+    public.extend_from_slice(kp.public().as_bytes());
+    let mut secret = Vec::from(AUDIT_SK_MAGIC.as_slice());
+    secret.extend_from_slice(kp.secret().as_bytes());
+    write_keypair_files(sk_path, pk_path, &secret, &public)?;
     Ok(kp)
 }
 
@@ -41,9 +44,9 @@ pub fn generate(sk_path: &Path, pk_path: &Path) -> Result<KeyPair> {
 pub fn load(sk_path: &Path, pk_path: &Path) -> Result<KeyPair> {
     let sk_blob = std::fs::read(sk_path)
         .with_context(|| format!("reading audit secret-key file {}", sk_path.display()))?;
-    if sk_blob.len() < 8 + qaudit_core::signing::SECRET_KEY_LEN {
+    if sk_blob.len() != 8 + qaudit_core::signing::SECRET_KEY_LEN {
         return Err(anyhow!(
-            "audit secret key file too short: {} bytes",
+            "audit secret key file has invalid length: {} bytes",
             sk_blob.len()
         ));
     }
@@ -53,6 +56,9 @@ pub fn load(sk_path: &Path, pk_path: &Path) -> Result<KeyPair> {
     let sk_bytes = &sk_blob[8..8 + qaudit_core::signing::SECRET_KEY_LEN];
     let sk = SecretKey::from_bytes(sk_bytes).context("decoding audit ML-DSA-87 SK")?;
     let pk = load_pub(pk_path)?;
+    if sk.derive_public()? != pk {
+        return Err(anyhow!("audit public key does not match secret key"));
+    }
     Ok(KeyPair::from_parts(pk, sk))
 }
 
@@ -60,8 +66,8 @@ pub fn load(sk_path: &Path, pk_path: &Path) -> Result<KeyPair> {
 pub fn load_pub(pk_path: &Path) -> Result<PublicKey> {
     let blob = std::fs::read(pk_path)
         .with_context(|| format!("reading audit public-key file {}", pk_path.display()))?;
-    if blob.len() < 8 + qaudit_core::signing::PUBLIC_KEY_LEN {
-        return Err(anyhow!("audit public-key file too short"));
+    if blob.len() != 8 + qaudit_core::signing::PUBLIC_KEY_LEN {
+        return Err(anyhow!("audit public-key file has invalid length"));
     }
     if &blob[..8] != AUDIT_PK_MAGIC {
         return Err(anyhow!("audit public-key file has bad magic"));
@@ -70,39 +76,65 @@ pub fn load_pub(pk_path: &Path) -> Result<PublicKey> {
         .map_err(|e| anyhow!("decoding audit public key: {e}"))
 }
 
-fn save_pub(path: &Path, pk: &PublicKey) -> Result<()> {
-    let mut blob = Vec::with_capacity(8 + pk.as_bytes().len());
-    blob.extend_from_slice(AUDIT_PK_MAGIC);
-    blob.extend_from_slice(pk.as_bytes());
-    std::fs::write(path, blob).with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
-}
-
-fn save_secret(path: &Path, kp: &KeyPair) -> Result<()> {
-    let mut blob = Vec::with_capacity(8 + kp.secret().as_bytes().len());
-    blob.extend_from_slice(AUDIT_SK_MAGIC);
-    blob.extend_from_slice(kp.secret().as_bytes());
-    write_secret_file(path, &blob)
-}
-
-#[cfg(unix)]
-fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
+/// Persist new key files without replacing existing files, symlinks or devices.
+/// Both outputs are staged and synced before publication. If publication of
+/// the public key fails after the secret key succeeds, the secret key remains
+/// available for recovery; existing key material is never overwritten.
+pub fn write_keypair_files(
+    sk_path: &Path,
+    pk_path: &Path,
+    secret: &[u8],
+    public: &[u8],
+) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("opening {} for write", path.display()))?;
-    f.write_all(contents)?;
-    Ok(())
-}
 
-#[cfg(not(unix))]
-fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
-    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
+    fn parent(path: &Path) -> &Path {
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+    }
+
+    for path in [sk_path, pk_path] {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "refusing to overwrite existing key file {}",
+                    path.display()
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("checking {}", path.display())),
+        }
+    }
+    if sk_path.file_name() == pk_path.file_name()
+        && std::fs::canonicalize(parent(sk_path))? == std::fs::canonicalize(parent(pk_path))?
+    {
+        return Err(anyhow!("secret and public key paths must be different"));
+    }
+    let mut sk_temp = tempfile::NamedTempFile::new_in(parent(sk_path))?;
+    let mut pk_temp = tempfile::NamedTempFile::new_in(parent(pk_path))?;
+    sk_temp.write_all(secret)?;
+    pk_temp.write_all(public)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        pk_temp
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    }
+    sk_temp.as_file().sync_all()?;
+    pk_temp.as_file().sync_all()?;
+    sk_temp
+        .persist_noclobber(sk_path)
+        .with_context(|| format!("publishing secret key {}", sk_path.display()))?;
+    pk_temp
+        .persist_noclobber(pk_path)
+        .with_context(|| format!("publishing public key {}", pk_path.display()))?;
+    #[cfg(unix)]
+    for path in [sk_path, pk_path] {
+        std::fs::File::open(parent(path))?.sync_all()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -135,5 +167,70 @@ mod tests {
         std::fs::write(&sk, bytes).unwrap();
         let err = load(&sk, &pk).map(|_| ()).unwrap_err();
         assert!(err.to_string().contains("bad magic"));
+    }
+
+    #[test]
+    fn key_generation_never_overwrites_existing_outputs() {
+        let tmp = TempDir::new().unwrap();
+        let sk = tmp.path().join("audit.skid");
+        let pk = tmp.path().join("audit.pub");
+        std::fs::write(&pk, b"keep existing public key").unwrap();
+        assert!(generate(&sk, &pk).is_err());
+        assert!(!sk.exists());
+        assert_eq!(std::fs::read(&pk).unwrap(), b"keep existing public key");
+        std::fs::remove_file(&pk).unwrap();
+        generate(&sk, &pk).unwrap();
+        let original = std::fs::read(&sk).unwrap();
+        assert!(generate(&sk, &pk).is_err());
+        assert_eq!(std::fs::read(&sk).unwrap(), original);
+    }
+
+    #[test]
+    fn key_generation_rejects_aliases_before_publication() {
+        let tmp = TempDir::new().unwrap();
+        let sk = tmp.path().join("key");
+        let pk = tmp.path().join(".").join("key");
+        assert!(generate(&sk, &pk).is_err());
+        assert!(!sk.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_generation_rejects_dangling_symlinks_and_creates_private_secret() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let tmp = TempDir::new().unwrap();
+        let sk = tmp.path().join("audit.skid");
+        let pk = tmp.path().join("audit.pub");
+        let target = tmp.path().join("target");
+        symlink(&target, &sk).unwrap();
+        assert!(generate(&sk, &pk).is_err());
+        assert!(!target.exists());
+        assert!(!pk.exists());
+        std::fs::remove_file(&sk).unwrap();
+        generate(&sk, &pk).unwrap();
+        assert_eq!(
+            std::fs::metadata(&sk).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn loading_rejects_mismatched_pair_and_trailing_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let sk = tmp.path().join("audit.skid");
+        let pk = tmp.path().join("audit.pub");
+        generate(&sk, &pk).unwrap();
+        let other_sk = tmp.path().join("other.skid");
+        let other_pk = tmp.path().join("other.pub");
+        generate(&other_sk, &other_pk).unwrap();
+        assert!(load(&sk, &other_pk).is_err());
+        let mut public = std::fs::read(&pk).unwrap();
+        public.push(0);
+        std::fs::write(&pk, public).unwrap();
+        assert!(load_pub(&pk).is_err());
+        let mut secret = std::fs::read(&sk).unwrap();
+        secret.push(0);
+        std::fs::write(&sk, secret).unwrap();
+        assert!(load(&sk, &other_pk).is_err());
     }
 }

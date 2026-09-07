@@ -3,8 +3,9 @@
 //! Read-only HTTP viewer for `.qa` audit logs.
 //!
 //! Serves a single-page HTML viewer with header info, verification badge, and
-//! the full entry table (pagination via `?offset=N&limit=M` is available on
-//! the JSON `/api/entries` endpoint only). Companion JSON API for tooling.
+//! a bounded, paginated entry table. The page supports English and Brazilian
+//! Portuguese (`?lang=pt-BR`). Companion JSON API for tooling.
+//! The log and verification result are an immutable startup snapshot.
 //!
 //! ```text
 //!   qaudit-portal --log audit.qa --pk qaudit.pk --listen 127.0.0.1:8080
@@ -25,15 +26,16 @@
 //!
 //! - Read-only: no append, no key access, no log modification path.
 //! - Designed to bind to `127.0.0.1` by default. Public exposure requires a
-//!   reverse proxy with mTLS (Sprint 4: QGateway terminates this).
+//!   authenticated reverse proxy. The portal has no built-in authentication.
 
 #![forbid(unsafe_code)]
 #![warn(rust_2018_idioms)]
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Query, State},
-    http::{header, StatusCode},
+    extract::{Query, Request, State},
+    http::{header, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -68,6 +70,7 @@ struct AppState {
     log_path: PathBuf,
     verify_ok: bool,
     verify_error: Option<String>,
+    independent_key: bool,
 }
 
 // Magic prefix (`AUDITPK0`) used by `qgateway audit-keygen` for `.audit.pub`
@@ -116,17 +119,20 @@ async fn main() -> Result<()> {
         log_path: cli.log.clone(),
         verify_ok,
         verify_error,
+        independent_key: cli.pk.is_some(),
     });
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/assets/style.css", get(stylesheet))
         .route("/api/info", get(api_info))
         .route("/api/verify", get(api_verify))
         .route("/api/entries", get(api_entries))
         .route("/api/pubkey", get(api_pubkey))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(state)
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(middleware::from_fn(security_headers));
 
     let addr: SocketAddr = cli.listen.parse().context("parsing --listen")?;
     let listener = tokio::net::TcpListener::bind(addr)
@@ -164,168 +170,134 @@ async fn shutdown_signal() {
 
 // ---------- handlers ----------
 
-async fn index(State(s): State<Arc<AppState>>) -> Html<String> {
+async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    for (name, value) in [
+        (header::CACHE_CONTROL, "no-store"),
+        (header::CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::REFERRER_POLICY, "no-referrer"),
+    ] {
+        response.headers_mut().insert(name, HeaderValue::from_static(value));
+    }
+    response
+}
+
+async fn stylesheet() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("style.css"),
+    )
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ViewOptions {
+    offset: Option<usize>,
+    limit: Option<usize>,
+    lang: Option<String>,
+}
+
+impl ViewOptions {
+    fn bounds(&self, total: usize) -> (usize, usize) {
+        (
+            self.offset.unwrap_or(0).min(total),
+            self.limit.unwrap_or(50).clamp(1, 200),
+        )
+    }
+}
+
+async fn index(State(s): State<Arc<AppState>>, Query(p): Query<ViewOptions>) -> Html<String> {
     let h = s.log.header();
+    let pt = p.lang.as_deref() == Some("pt-BR");
+    let tr = |en, br| if pt { br } else { en };
+    let lang = tr("en", "pt-BR");
+    let total = s.log.entries().len();
+    let (offset, limit) = p.bounds(total);
+    let end = offset.saturating_add(limit).min(total);
     let badge = if s.verify_ok {
-        r#"<span class="ok">✓ verified</span>"#
+        format!(
+            r#"<span class="badge ok">✓ {}</span>"#,
+            tr("Signatures verified", "Assinaturas verificadas")
+        )
     } else {
-        r#"<span class="bad">✗ INVALID</span>"#
+        format!(
+            r#"<span class="badge bad">✗ {}</span>"#,
+            tr("Verification failed", "Falha na verificação")
+        )
     };
     let err = s
         .verify_error
         .as_deref()
         .map(|e| {
             format!(
-                r#"<div class="err">Verification error: <code>{}</code></div>"#,
+                r#"<div class="err" role="alert">{}: <code>{}</code></div>"#,
+                tr("Verification error", "Erro de verificação"),
                 html_escape(e)
             )
         })
         .unwrap_or_default();
     let mut rows = String::new();
-    for e in s.log.entries() {
-        let mut meta = String::new();
-        for (k, v) in &e.event.metadata {
-            meta.push_str(&format!(
-                "<div><code>{}</code> = {}</div>",
-                html_escape(k),
-                html_escape(v)
-            ));
-        }
-        if meta.is_empty() {
-            meta.push_str("<em>(none)</em>");
-        }
-        rows.push_str(&format!(
-            r#"<tr>
-  <td class="num">{idx}</td>
-  <td class="mono">{appended_at}</td>
-  <td>{actor}</td>
-  <td>{action}</td>
-  <td class="resource">{resource}</td>
-  <td>{outcome}</td>
-  <td class="meta">{meta}</td>
-  <td class="mono small">{root}</td>
-</tr>
-"#,
-            idx = e.index,
-            appended_at = e.appended_at.format("%Y-%m-%d %H:%M:%SZ"),
-            actor = html_escape(&e.event.actor),
-            action = html_escape(&e.event.action),
-            resource = html_escape(&e.event.resource),
-            outcome = html_escape(&e.event.outcome),
-            meta = meta,
-            root = hex::encode(&e.new_root[..8]) + "…",
-        ));
+    for e in s.log.entries().iter().skip(offset).take(limit) {
+        let meta: String = e
+            .event
+            .metadata
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "<div><code>{}</code> = {}</div>",
+                    html_escape(k),
+                    html_escape(v)
+                )
+            })
+            .collect();
+        rows.push_str(&format!(r#"<tr><td class="num">{idx}</td><td class="mono timestamp">{at}</td><td>{actor}</td><td><code>{action}</code></td><td class="resource">{resource}</td><td>{outcome}</td><td class="meta">{meta}</td><td class="mono root">{root}…</td></tr>"#,
+            idx=e.index, at=e.appended_at.format("%Y-%m-%d %H:%M:%SZ"), actor=html_escape(&e.event.actor),
+            action=html_escape(&e.event.action), resource=html_escape(&e.event.resource), outcome=html_escape(&e.event.outcome),
+            meta=if meta.is_empty() { "—".to_owned() } else { meta }, root=hex::encode(&e.new_root[..8])));
     }
-
-    let body = format!(
-        r#"<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>qaudit portal — {log_id}</title>
-<style>
-  :root {{
-    --bg: #0d1117;
-    --fg: #c9d1d9;
-    --fg-dim: #8b949e;
-    --accent: #58a6ff;
-    --ok: #3fb950;
-    --bad: #f85149;
-    --panel: #161b22;
-    --border: #30363d;
-  }}
-  * {{ box-sizing: border-box; }}
-  body {{
-    margin: 0; padding: 0 24px 64px;
-    background: var(--bg); color: var(--fg);
-    font-family: -apple-system, "Segoe UI", "JetBrains Mono", monospace;
-    line-height: 1.45;
-  }}
-  header {{
-    border-bottom: 1px solid var(--border);
-    padding: 24px 0 16px; margin-bottom: 16px;
-  }}
-  header h1 {{ margin: 0; font-size: 18px; font-weight: 600; color: var(--accent); }}
-  header .sub {{ color: var(--fg-dim); font-size: 13px; margin-top: 4px; }}
-  .grid {{ display: grid; grid-template-columns: 200px 1fr; gap: 6px 16px; margin: 14px 0; font-size: 13px; }}
-  .grid dt {{ color: var(--fg-dim); }}
-  .grid dd {{ margin: 0; word-break: break-all; }}
-  .ok  {{ color: var(--ok); font-weight: 600; }}
-  .bad {{ color: var(--bad); font-weight: 600; }}
-  .err {{ background: rgba(248,81,73,0.12); border: 1px solid var(--bad); border-radius: 6px; padding: 10px 14px; margin: 10px 0; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 18px; }}
-  th, td {{ border-bottom: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }}
-  th {{ background: var(--panel); color: var(--fg-dim); font-weight: 500; position: sticky; top: 0; }}
-  td.num {{ font-variant-numeric: tabular-nums; color: var(--fg-dim); text-align: right; }}
-  td.mono, code {{ font-family: "JetBrains Mono", "Menlo", monospace; }}
-  td.mono.small {{ font-size: 11.5px; color: var(--fg-dim); }}
-  td.resource {{ max-width: 320px; overflow-wrap: anywhere; }}
-  td.meta {{ font-size: 11.5px; color: var(--fg-dim); }}
-  td.meta div {{ margin-bottom: 2px; }}
-  footer {{ margin-top: 32px; color: var(--fg-dim); font-size: 11.5px; }}
-  a {{ color: var(--accent); }}
-</style>
-</head>
-<body>
-<header>
-  <h1>Cofre Soberano PQ · qaudit portal</h1>
-  <div class="sub">Read-only auditor view · {entries} entries · {badge}</div>
-</header>
-
-{err}
-
-<dl class="grid">
-  <dt>log file</dt><dd class="mono">{log_path}</dd>
-  <dt>log_id</dt><dd class="mono">{log_id}</dd>
-  <dt>suite</dt><dd>{suite}</dd>
-  <dt>wire version</dt><dd>{wire_version}</dd>
-  <dt>created at</dt><dd class="mono">{created_at}</dd>
-  <dt>label</dt><dd>{label}</dd>
-  <dt>signature algo</dt><dd>ml-dsa-87 (FIPS 204)</dd>
-  <dt>hash algo</dt><dd>blake3-256</dd>
-  <dt>pubkey (first 16 B)</dt><dd class="mono">{pk_prefix}…</dd>
-  <dt>current root</dt><dd class="mono">{root}</dd>
-</dl>
-
-<table>
-  <thead>
-    <tr>
-      <th>#</th><th>appended_at</th><th>actor</th><th>action</th>
-      <th>resource</th><th>outcome</th><th>meta</th><th>root (head)</th>
-    </tr>
-  </thead>
-  <tbody>
-  {rows}
-  </tbody>
-</table>
-
-<footer>
-  qaudit-portal v{ver} · <a href="/api/entries">JSON API</a> ·
-  <a href="/api/verify">verify status</a> ·
-  schema <code>https://securityops.co/schemas/qaudit-export-v1</code>
-</footer>
-</body>
-</html>"#,
-        log_id = h.log_id,
-        log_path = html_escape(&s.log_path.display().to_string()),
-        suite = html_escape(&h.suite),
-        wire_version = h.wire_version,
-        created_at = h.created_at,
-        label = html_escape(if h.label.is_empty() {
-            "<none>"
-        } else {
-            h.label.as_str()
-        }),
-        pk_prefix = hex::encode(&h.pubkey.as_bytes()[..16]),
-        root = hex::encode(s.log.current_root()),
-        entries = s.log.len(),
-        badge = badge,
-        err = err,
-        rows = rows,
-        ver = env!("CARGO_PKG_VERSION"),
-    );
-    Html(body)
+    if rows.is_empty() {
+        rows = format!(
+            r#"<tr><td colspan="8" class="empty">{}</td></tr>"#,
+            tr("No entries on this page.", "Nenhuma entrada nesta página.")
+        );
+    }
+    let mut pagination = String::new();
+    if offset > 0 {
+        pagination.push_str(&format!(r#"<a class="button" rel="prev" href="/?offset={}&amp;limit={limit}&amp;lang={lang}">← {}</a>"#, offset.saturating_sub(limit), tr("Previous", "Anterior")));
+    }
+    if end < total {
+        pagination.push_str(&format!(r#"<a class="button" rel="next" href="/?offset={end}&amp;limit={limit}&amp;lang={lang}">{} →</a>"#, tr("Next", "Próxima")));
+    }
+    Html(format!(include_str!("index.html"),
+        lang=lang, log_id=h.log_id, ver=env!("CARGO_PKG_VERSION"),
+        lang_other=tr("pt-BR", "en"), lang_label=tr("Português (Brasil)", "English"), offset=offset, limit=limit,
+        subtitle=tr("Independent evidence. Offline verification.", "Evidências independentes. Verificação offline."),
+        viewer=tr("Audit viewer", "Visualizador de auditoria"), badge=badge, err=err,
+        label=html_escape(if h.label.is_empty() { tr("Untitled log", "Registro sem título") } else { &h.label }),
+        snapshot_title=tr("Startup snapshot", "Retrato da inicialização"),
+        snapshot=tr("This page and API show the file as loaded at startup. Restart the portal to load new entries. Verification alone cannot prove the log is complete or current.", "Esta página e a API mostram o arquivo carregado na inicialização. Reinicie o portal para carregar novas entradas. A verificação por si só não comprova que o registro está completo ou atualizado."),
+        entries_label=tr("Log entries", "Entradas do registro"), entries=total,
+        signature_label=tr("Signature algorithm", "Algoritmo de assinatura"),
+        signature_note=tr("FIPS 204 · 2,592-byte public key", "FIPS 204 · chave pública de 2.592 bytes"),
+        metadata_note=tr("Header labels/times and appended timestamps are not covered by wire-v1 signatures.", "Rótulos/datas do cabeçalho e horários de anexação não são cobertos pelas assinaturas wire-v1."),
+        key_label=tr("Verification key", "Chave de verificação"),
+        key_status=if s.independent_key { tr("Independent key supplied", "Chave independente fornecida") } else { tr("Embedded key only", "Somente chave incorporada") },
+        key_note=if s.independent_key { tr("Matches the supplied --pk file; establish its provenance separately.", "Corresponde ao arquivo --pk fornecido; confirme a procedência por outro canal.") } else { tr("Use --pk with a trusted key to establish signer identity.", "Use --pk com uma chave confiável para confirmar a identidade do assinante.") },
+        details_label=tr("Log details", "Detalhes do registro"), file_label=tr("Snapshot source", "Origem do retrato"),
+        log_path=html_escape(&s.log_path.display().to_string()), created_label=tr("Created at", "Criado em"), created_at=h.created_at,
+        suite=html_escape(&h.suite), wire_version=h.wire_version,
+        pk_label=tr("Public key · first 16 bytes", "Chave pública · primeiros 16 bytes"), pk_prefix=hex::encode(&h.pubkey.as_bytes()[..16]),
+        root_label=tr("Current Merkle root", "Raiz Merkle atual"), root=hex::encode(s.log.current_root()),
+        table_label=tr("Audit events", "Eventos de auditoria"), from=if offset < end { offset+1 } else { 0 }, to=if offset < end { end } else { 0 },
+        of_label=tr("of", "de"), timestamp_label=tr("Appended (UTC)", "Anexado (UTC)"),
+        actor_label=tr("Actor", "Ator"), action_label=tr("Action", "Ação"), resource_label=tr("Resource", "Recurso"),
+        outcome_label=tr("Outcome", "Resultado"), meta_label=tr("Metadata", "Metadados"), root_head_label=tr("Root · 8 bytes", "Raiz · 8 bytes"),
+        rows=rows, pagination=pagination, pagination_label=tr("Event pages", "Páginas de eventos"),
+        readonly=tr("Read-only · no signing keys required", "Somente leitura · sem chaves privadas"),
+        api_label=tr("Entries API", "API de entradas"), verify_label=tr("Verification API", "API de verificação"),
+        pubkey_label=tr("Download public key", "Baixar chave pública"),
+    ))
 }
 
 async fn api_info(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -343,6 +315,8 @@ async fn api_info(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "hash_algorithm":      "blake3-256",
         "verify_ok":           s.verify_ok,
         "verify_error":        s.verify_error,
+        "snapshot":            "startup",
+        "independent_key_supplied": s.independent_key,
     }))
 }
 
@@ -352,6 +326,8 @@ async fn api_verify(State(s): State<Arc<AppState>>) -> (StatusCode, Json<serde_j
             StatusCode::OK,
             Json(json!({
                 "ok": true,
+                "snapshot": "startup",
+                "independent_key_supplied": s.independent_key,
                 "entries": s.log.len(),
                 "root": hex::encode(s.log.current_root()),
             })),
@@ -433,6 +409,75 @@ fn html_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use qaudit_core::KeyPair;
+
+    #[test]
+    fn html_pagination_is_bounded_even_for_extreme_queries() {
+        let p = ViewOptions {
+            offset: Some(usize::MAX),
+            limit: Some(usize::MAX),
+            lang: None,
+        };
+        assert_eq!(p.bounds(10), (10, 200));
+        assert_eq!(
+            ViewOptions {
+                limit: Some(0),
+                ..Default::default()
+            }
+            .bounds(10),
+            (0, 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn html_escapes_events_and_discloses_snapshot_and_untrusted_key() {
+        let mut log =
+            AuditLog::create_with_label(KeyPair::generate().unwrap(), "<script>label</script>")
+                .unwrap();
+        for i in 0..3 {
+            log.append(
+                qaudit_core::AuditEvent::builder()
+                    .actor("<script>actor</script>")
+                    .action(format!("event-{i}"))
+                    .build(),
+            )
+            .unwrap();
+        }
+        let state = Arc::new(AppState {
+            log,
+            log_path: "<source>.qa".into(),
+            verify_ok: true,
+            verify_error: None,
+            independent_key: false,
+        });
+        let Html(html) = index(
+            State(state.clone()),
+            Query(ViewOptions {
+                offset: Some(1),
+                limit: Some(1),
+                lang: None,
+            }),
+        )
+        .await;
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;actor&lt;/script&gt;"));
+        assert!(html.contains("event-1"));
+        assert!(!html.contains("event-0"));
+        assert!(!html.contains("event-2"));
+        assert!(html.contains("Startup snapshot"));
+        assert!(html.contains("Embedded key only"));
+        assert!(html.contains("rel=\"prev\""));
+        assert!(html.contains("rel=\"next\""));
+        let Html(pt) = index(
+            State(state),
+            Query(ViewOptions {
+                lang: Some("pt-BR".into()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert!(pt.contains("lang=\"pt-BR\""));
+        assert!(pt.contains("Assinaturas verificadas"));
+    }
 
     #[test]
     fn escape_handles_html_chars() {

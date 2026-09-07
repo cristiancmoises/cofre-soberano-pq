@@ -7,6 +7,47 @@
 
 ---
 
+
+## Current implementation contract (v1.0.3)
+
+This section takes precedence over historical sprint plans below. Delivered
+binaries are `qaudit`, `qaudit-portal`, and `qgateway` (also built with optional
+PKCS#11 support). QVault and RFC 3161 / OpenTimestamps anchoring are deferred.
+XML is the project's QAudit export schema, not an approved regulator schema.
+The implemented crypto primitives and tests do not establish certification or
+legal compliance.
+
+Wire-v1 signatures protect signed event payloads and chain commitments, but
+not header labels/creation times or per-entry `appended_at`. Complete trailing
+entries can be removed without invalidating the remaining prefix. Operators
+need independently trusted public keys, final-root/count checkpoints, and an
+ordered segment inventory to establish identity and detect rollback. An
+attacker authorized to sign can fabricate events even when a non-exportable
+HSM key is used.
+
+The portal serves a read-only startup snapshot, including verification APIs;
+it does not reload a growing file or implement authentication. HTML views
+support English/pt-BR and bounded pagination (50 default, 200 maximum). JSON
+pagination defaults to 100, maximum 1000. It supplies no-store, restrictive
+CSP, anti-framing, no-referrer, and nosniff response headers. QAudit CLI
+initialization creates private atomic output files, rejects path aliases and
+non-regular outputs, and verifies existing logs before append or rotation.
+Offline rotation writes two files and is not an atomic multi-file transaction;
+use one writer per `.qa` file and retain backups. Atomic replacement does not
+serialize independent writers; concurrent CLI/daemon writes can lose updates.
+
+**Contrato atual em português:** os binários entregues são QAudit, portal e
+QGateway; QVault e ancoragem temporal externa não estão implementados. O XML
+usa esquema próprio, sem aprovação regulatória. As assinaturas wire-v1 não
+cobrem rótulos/datas do cabeçalho nem `appended_at`; a exclusão de entradas
+completas no final exige checkpoints externos para detecção. O portal serve
+um retrato da inicialização, oferece inglês/pt-BR e paginação limitada, e
+precisa de acesso autenticado externo. Rotação offline exige parar escritores
+concorrentes e preservar backups. A revisão interna e os testes desta release
+não equivalem a auditoria criptográfica independente ou certificação.
+
+---
+
 ## 0. IDENTITY
 
 | Field | Value |
@@ -24,17 +65,16 @@
 
 ## 1. MISSION
 
-Build the complete post-quantum cryptographic boundary that every Brazilian
-regulated institution will be forced to acquire between 2026 and 2030 — under
-Bacen, CMN, CVM, ANPD, SUSEP and SWIFT CSP migration mandates.
-
-Three products. One SKU. One installer. One auditable supply chain.
+Build an auditable post-quantum transport and audit boundary for regulated
+deployments. The repository currently delivers QGateway and QAudit. QVault is
+a design concept only: it has no crate, binary, storage format implementation,
+or release artifact and is outside the current release scope.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       COFRE SOBERANO PQ                         │
 ├──────────────────┬──────────────────────┬───────────────────────┤
-│  QGateway        │  QVault              │  QAudit               │
+│  QGateway        │  QVault (deferred)   │  QAudit               │
 │  (Evelin)        │  (Zupt)              │  (ML-DSA-87)          │
 ├──────────────────┼──────────────────────┼───────────────────────┤
 │  PQ transport.   │  PQ object store.    │  PQ audit log.        │
@@ -59,24 +99,34 @@ Three products. One SKU. One installer. One auditable supply chain.
 These are not "preferences" or "best practices". They are gate criteria for
 every commit, every release, every contract.
 
-1. **Pure Rust** in qgateway, qvault, qaudit. No GC, no JVM, no Python in hot
-   paths. C only via FFI to audited primitives (Zupt's libzupt) or HSM PKCS#11.
+1. **Pure Rust** in the implemented QGateway and QAudit paths. No GC, JVM, or
+   Python in hot paths. Native interfaces are limited to required system
+   dependencies and the optional HSM PKCS#11 boundary. QVault is not
+   implemented.
 2. **Zero call-home, zero telemetry, zero forced cloud.** The product runs on
    air-gapped networks. Any phone-home is a P0 bug.
-3. **Reproducible builds.** `cargo build --locked --release` from any clean
-   checkout must produce byte-identical binaries given the same toolchain.
-4. **Signed releases.** Every artifact carries an ML-DSA-87 detached signature
-   *and* a Sigstore signature. Auditors must be able to verify offline.
-5. **PKCS#11 first-class.** Every key material primitive has an HSM path
-   (Dinamo, Kryptus Aegis, Thales Luna/payShield, Entrust nShield, YubiHSM 2,
-   Atos Trustway). Software keys are dev-mode only.
-6. **On-prem only.** Container, .deb, .rpm, bare-metal, hardware appliance. No
-   SaaS. No multi-tenant cloud. Period.
-7. **LGPD by construction.** Article 46 "estado da arte" is the design floor.
-   PQ + ML-DSA-87 + on-prem + audit trail = legally defensible.
-8. **Crypto-agile.** Every algorithm choice lives behind a `Suite` enum.
-   ML-KEM-1024 → ML-KEM-1280 (if/when standardized) is a configuration change,
-   not a rewrite.
+3. **Repeatable release inputs.** Release builds use the exact Rust 1.95.0
+   toolchain, committed `Cargo.lock`, a clean release commit, and deterministic
+   archive metadata. Byte-identical binaries are claimed only after an
+   independent rebuild comparison; a single successful build is not proof.
+4. **Signed releases.** The canonical release process fails closed unless every
+   published artifact has both a verified ML-DSA-87 detached signature and a
+   verified Sigstore signature, with public verification material available
+   offline.
+5. **Honest PKCS#11 scope.** Audit signing has optional PKCS#11 support and
+   per-tenant signer overrides. Transport identity keys remain file-backed.
+   Production HSM interoperability must be live-tested against the exact
+   hardware, firmware, driver, and mechanism; compilation is not certification.
+6. **On-prem only.** The current supported distribution is a platform-labelled
+   binary bundle plus a hardened systemd unit. No SaaS is provided. `.deb`,
+   `.rpm`, OCI, Helm, and appliance claims require separately tested artifacts.
+7. **Explicit compliance scope.** Cryptography and on-prem deployment can
+   support an operator’s controls; this project makes no legal-compliance
+   certification claim. Assess retention, access control, trusted time,
+   governance, and regulatory submission requirements separately.
+8. **Explicit crypto suite.** The current wire and audit formats carry fixed
+   suite identifiers. There is no implemented runtime `Suite` enum; changing
+   algorithms requires a reviewed compatibility and migration change.
 9. **No stubs ever ship.** If a feature is half-built, it is feature-flagged
    off and absent from the documented surface.
 10. **Honest disclosure.** If a primitive is broken, we say so the same day.
@@ -84,20 +134,20 @@ every commit, every release, every contract.
 
 ---
 
-## 3. COMPLIANCE MAP (BRAZIL)
+## 3. COMPLIANCE EVALUATION CONTEXT (BRAZIL)
 
-| Norma / Padrão | O que exige | Como CSPQ atende |
-|---|---|---|
-| **LGPD Art. 46** | "Medidas técnicas aptas a proteger" | PQ + AGPL auditável = estado da arte defensável |
-| **Bacen Res. 4.893/2021** | Gestão de risco cibernético, crypto-agility | Suite enum + HSM PKCS#11 + audit log assinado |
-| **Bacen Circ. 3.978/2020** | Retenção 20 anos com integridade (PLD-FT) | QVault WORM + QAudit Merkle 20y |
-| **CMN Res. 4.474/2016** | Dossiês PLD-FT íntegros | QVault content-addressed BLAKE3 |
-| **CVM Res. 80/2022** | Relatórios assinados verificáveis | QAudit ML-DSA-87 + RFC 3161 timestamp |
-| **SUSEP Circ. 638/2021** | Segurança da informação seguradoras | Mesmo stack PQ |
-| **Open Finance / DICT** | mTLS + alta disponibilidade | QGateway substitui mTLS clássico por PQ |
-| **SWIFT CSP 2025+** | Crypto migration roadmap | Evelin = PQ-ready transport |
-| **ANPD GT-Cripto** | Cripto pós-quântica recomendada 2025+ | Default = ML-KEM-1024 + ML-DSA-87 |
-| **ICP-Brasil DOC-ICP-15** | Algoritmos aprovados | ML-DSA candidato — pioneerismo competitivo |
+QAudit and QGateway provide technical components for an operator's security
+and audit workflow. They do not certify compliance with LGPD, financial-sector
+rules, ICP-Brasil, Open Finance, or any other regulatory framework. The project
+has no approved regulatory XML submission schema or trusted timestamp service.
+Retention/WORM storage, independently authenticated checkpoints, access policy,
+incident procedures, and legal review remain deployment responsibilities.
+
+QAudit e QGateway fornecem componentes técnicos de segurança e auditoria.
+O projeto não certifica conformidade regulatória, não fornece esquema XML
+aprovado por reguladores e não implementa serviço de carimbo de tempo confiável.
+Retenção/WORM, checkpoints autenticados por canal independente, política de
+acesso e avaliação dos requisitos aplicáveis pertencem à implantação.
 
 ---
 
@@ -147,26 +197,24 @@ Federal · Dataprev · Serpro · Anatel · TJSP · TJRJ · Polícia Federal.
 
 ---
 
-## 6. ROADMAP (12 MESES — 10 SPRINTS)
+## 6. CURRENT PRODUCT STATUS AND ROADMAP
 
-| Sprint | Mês | Deliverable | Status |
-|--------|-----|-------------|--------|
-| S1 | M1  | QAudit v0.1 — Merkle log + ML-DSA-87 CLI | ✅ closed |
-| S2 | M2  | QAudit v0.2 — Signer trait + PKCS#11 + Bacen XML export + portal web | ✅ closed |
-| **S3** | **M3–4** | **QGateway v0.1 — TCP↔CSPQ reverse-proxy sidecar, single tenant** | ✅ **closed** |
-| **S4** | **M4–5** | **QGateway v0.2 — multi-tenant, persistent audit binding, TLS termination** | **CURRENT** |
-| S5 | M5–7 | QVault v0.1 — S3 subset + Zupt blob layer | — |
-| S6 | M7–8 | QVault v0.2 — WORM, lifecycle, geo-replication | — |
-| S7 | M8–9 | Hardening — fuzzing (AFL++), ACSL/Frama-C onde aplicável, audit externo (TrailOfBits/NCC) | — |
-| S8 | M9–10 | Packaging — .deb/.rpm/OCI/Helm/Ansible/Terraform | — |
-| S9 | M10–11 | **Pilot bancário** — 1 instituição Tier 2 on-site | — |
-| S10 | M11–12 | **GA** — comercial launch, 3 contratos assinados | — |
+| Surface | Delivered status | Next work |
+|---|---|---|
+| QAudit libraries, CLI, and portal | Implemented: ML-DSA-87 audit chains, inspection, verification, rotation, XML/JSONL export, read-only portal | Changes require a concrete defect or operator requirement |
+| QGateway and CSPQ transport | Implemented: multi-tenant TCP↔CSPQ proxy, TLS/SNI lifecycle, admission controls, rotation, metrics, per-tenant audit signers, `validate` | Changes require a concrete defect or operator requirement |
+| Release integrity | Canonical CI/release scripts, systemd packaging, SBOM, manifest, checksums, ML-DSA-87 and Sigstore signatures | Validate and publish the same immutable artifact bytes to every release host |
+| QVault and other product concepts | Not implemented and not part of the current workspace or release | Demand-gated; do not advertise as shipped |
+| `.deb`, `.rpm`, OCI, Helm, Ansible, Terraform | Not currently shipped as tested release artifacts | Demand-gated and must have dedicated validation before documentation |
 
 ---
 
 ## 7. ARCHITECTURE — DATA FLOWS
 
-### 7.1 At-rest (QVault)
+### 7.1 At-rest (QVault concept; not implemented)
+
+The following diagram is retained as a design direction, not as a description
+of code or an artifact present in this repository:
 
 ```
 Application (S3 SDK)
@@ -215,8 +263,8 @@ QGateway / QVault / external app
 │  3. Append to MMR (Merkle Mountain Range)               │
 │  4. Sign new root with ML-DSA-87                        │
 │  5. Persist entry { event, prev_root, new_root, sig }   │
-│  6. Anchor root every N entries to public ledger        │
-│     (OpenTimestamps + RFC 3161 TSA)                     │
+│  6. Persist the signed chain for operator-managed       │
+│     retention; no timestamp-ledger anchor is implemented │
 └─────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -232,58 +280,43 @@ QGateway / QVault / external app
 cofre-soberano-pq/
 ├── SPEC.md                       # this file
 ├── README.md
+├── README.pt-BR.md
 ├── LICENSE-AGPL
-├── LICENSE-COMMERCIAL            # template for paid customers
+├── LICENSE-COMMERCIAL            # scope/inquiry notice, not a grant
+├── NOTICE
 ├── Cargo.toml                    # workspace
 ├── Cargo.lock                    # always committed
-├── rust-toolchain.toml           # pin stable
-├── deny.toml                     # cargo-deny supply-chain config
+├── rust-toolchain.toml           # exact Rust 1.95.0 pin
 ├── .github/workflows/ci.yml
 ├── crates/
 │   ├── qaudit-core/              # library (S1)
+│   ├── qaudit-hsm/               # softkey + optional PKCS#11 signer
 │   ├── qaudit/                   # CLI (S1)
 │   ├── qaudit-portal/            # web UI (S2)
+│   ├── qtransport-cspq/          # CSPQ transport
 │   ├── qgateway-core/            # library (S3)
-│   ├── qgateway/                 # daemon (S3)
-│   ├── qvault-core/              # library (S5)
-│   ├── qvault/                   # S3 daemon (S5)
-│   ├── shared-pkcs11/            # HSM substrate (S2+)
-│   └── shared-suite/             # crypto-agility Suite enum (S1)
+│   └── qgateway/                 # daemon (S3)
 ├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── THREAT-MODEL.md
-│   ├── COMPLIANCE-MAPPING.md
-│   ├── DEPLOY-ON-PREM.md
-│   ├── HSM-INTEGRATION.md
-│   └── BACEN-EXPORT-FORMAT.md
-├── packaging/
-│   ├── deb/  rpm/  oci/  helm/  ansible/  terraform/
-└── tests/
-    ├── interop/                  # cross-product integration
-    └── fuzz/                     # AFL++ harnesses
+│   ├── RUNBOOK.md / RUNBOOK.pt-BR.md
+│   ├── HSM.md / HSM.pt-BR.md
+│   └── SMOKE_TEST.md / SMOKE_TEST.pt-BR.md
+├── systemd/
+│   └── qgateway.service
+└── scripts/
+    ├── ci.sh                    # canonical validation entry point
+    └── release.sh               # fail-closed artifact builder
 ```
 
 ---
 
 ## 9. CRYPTO SUITE (canonical defaults)
 
-```rust
-pub enum Suite {
-    /// Default for 2026 launch. NIST PQC L5 + L3.
-    Cspq2026,
-}
-
-impl Suite {
-    pub const DEFAULT: Self = Self::Cspq2026;
-
-    pub const fn kem(&self) -> Kem        { Kem::MlKem1024 }      // FIPS 203
-    pub const fn kem_hybrid(&self) -> Kem { Kem::MlKem768X25519 } // for at-rest
-    pub const fn sig(&self) -> Sig        { Sig::MlDsa87 }        // FIPS 204
-    pub const fn aead(&self) -> Aead      { Aead::Chacha20Poly1305 }
-    pub const fn hash(&self) -> Hash      { Hash::Blake3_256 }
-    pub const fn kdf(&self) -> Kdf        { Kdf::Argon2id }
-}
-```
+The implemented transport suite is wire ID `0x0001`: ML-KEM-1024 (FIPS 203),
+ML-DSA-87 (FIPS 204), HKDF-SHA3-256, and ChaCha20-Poly1305. QAudit records the
+suite string `cspq-2026` and uses ML-DSA-87 with BLAKE3 chain hashing. These
+identifiers are constants in the current format, not runtime-selectable
+configuration. Any new suite needs a new identifier, compatibility tests, and
+a documented migration path.
 
 All cryptographic primitives are addressed by `Suite`. **No call site ever
 hard-codes an algorithm.**
@@ -4671,9 +4704,10 @@ lifecycle events.
   top-level `[audit_signer]` shared by all tenants. If two tenants
   rotate at the same time, the rotation handle is per-tenant —
   this isn't tested here.
-- **HSM-backed signer (PKCS#11).** The fixture uses softkey signer
-  (the simpler path). PKCS#11 has its own qaudit-hsm lib tests
-  with a SoftHSM2 backend.
+- **HSM-backed signer (PKCS#11).** The fixture uses the simpler softkey
+  signer. The optional PKCS#11 path has unit coverage, but its live
+  ML-DSA-87 round-trip test is ignored unless real compatible hardware is
+  provisioned; SoftHSM2 does not provide that live ML-DSA-87 path.
 - **Sustained crash-recovery.** The test doesn't kill -9 mid-write
   to verify the chain header survives an abrupt termination. The
   `shutdown_async` path is the graceful case; the truncation/
@@ -6187,9 +6221,9 @@ gate with two documents totalling ~1100 lines.
 1. **Why HSM-backed audit signing** — threat model explanation:
    protects against host-root compromise, not against application-
    layer code injection or HSM physical attack
-2. **Supported PKCS#11 implementations** — vendor matrix with honest
-   status: SoftHSM2 (lib-tested via qaudit-hsm CI); YubiHSM2,
-   Thales Luna, Utimaco listed as untested-pending-hardware
+2. **Supported PKCS#11 implementations** — compatibility matrix that
+   distinguishes compile/unit coverage from the ignored live ML-DSA-87
+   hardware round-trip; no listed device is presented as certified by CI
 3. **Configuration** — HSM key provisioning workflow (generate on
    HSM, never import), TOML config schema for `[audit_signer]
    kind = "pkcs11"` block, PIN handling via `pin_env` + systemd
@@ -6200,8 +6234,8 @@ gate with two documents totalling ~1100 lines.
    CKR_MECHANISM_INVALID), sign-failure incident response, handshake
    latency diagnosis when HSM is bottleneck, HSM key rotation procedure
 5. **Honest limitations and roadmap** — what HSM custody does NOT
-   protect against, deferred items (per-tenant signers, sign-op
-   batching, cluster failover, key attestation), pre-production
+   protect against, per-tenant signer overrides, and deferred items
+   (sign-op batching, cluster failover, key attestation), pre-production
    hardening checklist (8 items)
 
 ### 13.44.4 Trade-offs documented
@@ -6265,7 +6299,8 @@ operator-demand-gated:
 5. **Backup / DR procedure document.** Ships when a regulator's recovery-time-objective surfaces.
 6. **OpenTelemetry export** (architectural addition).
 7. **gRPC management endpoint** (architectural addition).
-8. **Per-tenant audit signers** (HSM.md §5.2 deferred item).
+8. ✅ **Per-tenant audit signers** — already implemented through
+   `[tenants.audit_signer]`; the top-level block remains the default.
 9. **Sign-op batching** (HSM.md §5.2 deferred item).
 10. All remaining Sprint 35-era integration-test deferrals (concurrent burst, multi-source rate, refill, cargo-fuzz, TLS/SNI chaos, SO_REUSEPORT).
 
@@ -6460,7 +6495,7 @@ deferral falls into one of:
 - **Operator-demand-gated** (Grafana JSON, Bacen mapping, K8s/Helm,
   DR procedure): would be speculation without external pull.
 - **Architectural additions** (OTel export, gRPC mgmt endpoint,
-  per-tenant signers, sign-op batching, multi-daemon mesh): each
+  sign-op batching, multi-daemon mesh): each
   is its own multi-sprint design + implementation effort, not a
   v1.0 polish item.
 - **Mechanical test extensions** (concurrent burst, multi-source
@@ -6484,11 +6519,13 @@ operator-demand, it shouldn't be built.
 
 ## 13.46. SPRINT 38 — DELIVERABLE CONTRACT (✅ CLOSED — release hygiene for v1.0)
 
-Sprint 38 closes a gap that Sprints 35-37's "stop sprinting"
-recommendation surfaced but didn't itself fix: **reproducible-build
-hygiene at the repository level**. The product claims reproducible
-builds in README, SPEC, and HSM.md. Sprint 38 makes those claims
-true at the release-artifact level rather than aspirational.
+Sprint 38 closed part of the gap that Sprints 35-37's "stop sprinting"
+recommendation surfaced: **repeatable-build inputs at the repository level**.
+The exact toolchain and committed lockfile are necessary, but they are not
+sufficient evidence of byte-identical binaries. The later canonical release
+process supplies deterministic archives, signatures, an SBOM, and a manifest;
+independent rebuild comparison remains the standard for a binary
+reproducibility claim.
 
 This sprint passes the §17 standing-policy test because a Bacen
 examiner asking *"reproduce this binary from source"* requires (a)
@@ -6501,9 +6538,9 @@ back it up.
 
 | # | Defect | Fix |
 |---|---|---|
-| 1 | `Cargo.lock` excluded from every ship tarball since Sprint 11 | Removed `--exclude='cofre-soberano-pq/Cargo.lock'` from the canonical ship command. The lockfile is now part of every released tarball, so downstream operators can reproduce the dependency tree exactly. |
+| 1 | `Cargo.lock` excluded from earlier source archives | The canonical release script includes the committed lockfile in the source archive. |
 | 2 | `rust-toolchain.toml` pinned `channel = "stable"` — drifts | Pinned to `channel = "1.95.0"` (the Rust release used to build v1.0). Bumping requires intentional edit + re-validation against the test suite. |
-| 3 | CI used `dtolnay/rust-toolchain@stable` in every job — same drift risk | All 6 CI jobs (fmt, clippy, test, smoke_qaudit, smoke_qgateway, audit_cargo) now use `@1.95.0`. Comment block documents that the file's pins must match `rust-toolchain.toml`. |
+| 3 | CI could drift from the local validation contract | `.github/workflows/ci.yml` delegates to `scripts/ci.sh`; both honor the exact `rust-toolchain.toml` pin. |
 
 ### 13.46.2 Additional CI coverage added
 
@@ -6513,17 +6550,17 @@ extension):
 
 | # | Gap | Fix |
 |---|---|---|
-| 4 | CI's clippy step linted `qaudit-hsm --features pkcs11` but NOT `qgateway --features pkcs11`. qgateway has had PKCS#11-conditional code paths since Sprint 16+, and Sprint 37 added more (PKCS#11 module presence + pin_env check in the validator). | Added `cargo clippy -p qgateway --features pkcs11 --all-targets --locked -- -D warnings` step. |
-| 5 | CI's test step built `qaudit-hsm --features pkcs11` but NOT `qgateway --features pkcs11`. Every sprint since 17 has verified the qgateway pkcs11 build locally as part of the acceptance gate; CI was the gap. | Added `cargo build -p qgateway --features pkcs11 --locked` step to the test matrix. |
-| 6 | The `smoke_qgateway` CI job ran the daemon end-to-end but never exercised the Sprint 37 `validate` subcommand. | Added two `qgateway validate` invocations to the smoke job: once before launching the daemons (catches CI-environment-specific config issues), once while daemon A is running (proves the non-interference commitment from RUNBOOK §3.2). |
+| 4 | The default workspace lint does not exercise every optional HSM path. | The canonical CI script explicitly lints `qaudit-hsm` and `qgateway` with `--features pkcs11`. |
+| 5 | A default build does not prove the gateway's optional PKCS#11 variant compiles. | The canonical CI script explicitly builds/tests the feature path used by the release variant. |
+| 6 | Configuration parsing alone does not exercise the Sprint 37 CLI contract. | Workspace integration tests invoke `qgateway validate`; it remains side-effect-free and does not open an HSM session. |
 
 ### 13.46.3 What this does NOT change
 
-- **No code change.** Sprint 38 is repository-hygiene only. The
-  test count is unchanged at 227.
-- **No semantic change to the product.** v1.0 binaries built from
-  Sprint 37's source vs Sprint 38's source will be byte-identical
-  (modulo timestamps embedded by the toolchain).
+- **No product-protocol change.** Sprint 38 was repository hygiene. Test totals
+  are intentionally not treated as a permanent specification; the canonical
+  commands and their exit status are the gate.
+- **No byte-identical claim from inputs alone.** Pinned tools and dependencies
+  narrow build variance but do not replace an independent rebuild comparison.
 - **No new dependency.** Existing `cargo` + `dtolnay/rust-toolchain`
   + `Swatinem/rust-cache` are unchanged; only the version pins
   inside their `with:` blocks moved from `@stable` to `@1.95.0`.
@@ -6537,16 +6574,9 @@ extension):
   When 1.95.1 comes out and we want to upgrade, the bump is a
   single-line change + re-verify; meanwhile the artifact is
   pinned.
-- **CI version pin duplicated in two places.**
-  `rust-toolchain.toml` + every `dtolnay/rust-toolchain@X` line
-  in CI. Could be DRY'd by deleting the explicit CI pin and
-  letting the toolchain file flow through (Cargo respects it
-  automatically). Kept the explicit CI pin because (a) it makes
-  the version visible in the CI run UI without operators needing
-  to read the toolchain file, (b) `dtolnay/rust-toolchain@<file>`
-  syntax exists but adds an indirection layer that surprises
-  some readers. The comment block at the top of `ci.yml`
-  documents the duplication contract.
+- **One validation entry point.** CI delegates to `scripts/ci.sh`; the checked-in
+  toolchain file remains the version authority instead of duplicating a version
+  across multiple workflow jobs.
 - **Did not add reproducibility verification step.** A truly
   paranoid pipeline would build the binary twice (once on CI,
   once locally) and `diff` the outputs. Out of scope for Sprint
@@ -6555,46 +6585,29 @@ extension):
   reproducible builds require additional work (deterministic
   build timestamps, sorted symbol tables, etc.) that exceed the
   v1.0 ship gate.
-- **Did not ship the binary itself.** Sprint 38's deliverable
-  is the SOURCE TARBALL with hygiene improvements. Building the
-  release binary + distributing it is a separate operation
-  (likely a `make release` target in a future sprint, but trivially
-  expressible as `cargo build --release --locked --workspace` for
-  now). The HSM doc and runbook document the install workflow
-  assuming the operator builds locally; this is normal for
-  AGPL-3.0 distribution where source is the canonical artifact.
-- **CI smoke now runs `validate` twice in `smoke_qgateway`.**
-  Once pre-daemon, once with daemon A running. Could have used
-  a separate `validate` smoke job, but folding into the existing
-  one avoids an extra `cargo build` cycle in CI (each new job
-  rebuilds, which is the long pole). Cost: the smoke job is now
-  ~10 seconds longer; benefit: validate gets real CI exercise
-  on every push.
+- **Binary distribution is now explicit.** `scripts/release.sh` builds the three
+  standard executables plus a separately named PKCS#11 gateway variant and
+  packages them with source, operator docs, licenses, NOTICE, and systemd unit.
+- **No standalone `validate` smoke job.** The workspace test gate runs
+  `validate_cli` integration coverage; hosted CI delegates that gate to
+  `scripts/ci.sh` rather than duplicating a separate smoke workflow.
 
 ### 13.46.5 API surface changes
 
 **None.** Sprint 38 is repository hygiene only.
 
-### 13.46.6 Acceptance — actual
+### 13.46.6 Current acceptance contract
 
-- [x] `rust-toolchain.toml` pinned to `1.95.0`.
-- [x] All 6 CI jobs use `dtolnay/rust-toolchain@1.95.0`.
-- [x] CI clippy adds `qgateway --features pkcs11` step.
-- [x] CI test adds `qgateway --features pkcs11` build step.
-- [x] CI `smoke_qgateway` invokes `qgateway validate` twice
-      (pre-daemon, mid-daemon for non-interference proof).
-- [x] `Cargo.lock` is no longer excluded from the ship tarball.
-- [x] `cargo build --workspace --locked` succeeds (lockfile is
-      consistent with current Cargo.toml manifests).
-- [x] `cargo fmt --all --check` clean.
-- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings`
-      clean.
-- [x] `cargo clippy -p qgateway --features pkcs11 --all-targets
-      --locked -- -D warnings` clean (the new CI step).
-- [x] `cargo build -p qgateway --features pkcs11 --locked` clean
-      (the new CI step).
-- [x] 227 tests still pass (unchanged from Sprint 37).
-- [x] `.github/workflows/ci.yml` parses as valid YAML.
+- `rust-toolchain.toml` is exactly pinned to Rust 1.95.0.
+- `.github/workflows/ci.yml` invokes `scripts/ci.sh` so local and hosted gates
+  cannot silently diverge.
+- Formatting, workspace clippy/tests, release tests, PKCS#11 feature lint/build,
+  smoke validation, and dependency vulnerability audit must all exit zero.
+- `scripts/release.sh` must start from a clean release commit, build with
+  `--locked`, include `Cargo.lock`, and fail closed without every required
+  tool and signing key.
+- Test totals are reported by the release run; no fixed count in this section
+  substitutes for the current command output.
 
 ### 13.46.7 Honest deferrals to Sprint 39+ / v1.1
 
@@ -6603,13 +6616,8 @@ extension):
 - **Bit-for-bit reproducible binary build** (deterministic
   timestamps, sorted symbol tables, SOURCE_DATE_EPOCH): not yet.
   Ships when a downstream packager asks.
-- **Release tarball signing**: not yet. The audit-signer pattern
-  proves we know how to do PQ-signed artifacts; releases would
-  follow the same pattern (ML-DSA-87 over the source tarball).
-  Ships when distribution scale justifies.
-- **SBOM generation** (CycloneDX or SPDX): not yet. Useful for
-  enterprise procurement; the dependency tree is small + visible
-  in `Cargo.lock` for now.
+- **Release signing and SBOM** are no longer deferrals: the canonical release
+  script requires ML-DSA-87 and Sigstore signing and emits a CycloneDX SBOM.
 - **Cross-platform release matrix** (Linux x86_64 + aarch64 +
   Windows + macOS): not yet. CI tests on ubuntu + macos already;
   release artifacts are not pre-built. Operators build from source.
@@ -6623,59 +6631,60 @@ unbacked by toolchain pin + committed Cargo.lock + CI proof would
 fail the Bacen examiner test at the most basic level — before
 they even get to looking at the crypto."
 
-After Sprint 38, every remaining item is operator-demand-gated.
-The §17 standing-policy test would fail. **Sprint 39+ requires
-external pull, not internal momentum.**
+After Sprint 38, speculative product features remain operator-demand-gated.
+Release-integrity work is an exception because it closes a concrete gap
+between shipped bytes and the repository's security claims.
 
 ---
 
-## 13.99. STATE OF THE PROJECT AT v1.0 (post Sprint 38)
+## 13.99. CURRENT STATE OF THE PROJECT
 
-**Product status**: feature-complete for v1.0 single-daemon
-deployment in regulated-Brazil contexts. Recommended for tagging
-v1.0 and shipping to git.securityops.co.
+**Product status**: the seven-crate workspace implements QAudit, QGateway, and
+the CSPQ transport. QVault is not implemented. `qgateway validate`, per-tenant
+audit-signer overrides, runtime tenant/TLS/SNI lifecycle, rotation, admission
+controls, metrics, and the operator documents are delivered. Compatibility and
+regulatory suitability remain deployment-specific; this specification is not a
+certification.
 
-**Test surface**:
-- 220 tests across lib + integration layers
-- 13 integration test files exercising lifecycle, security data
-  plane, capacity enforcement, audit chain integrity
-- 207 lib tests across 7 crates
-- All gates: `cargo test --workspace`, `cargo clippy
-  --workspace --all-targets -- -D warnings`, `cargo fmt --check`,
-  `cargo build -p qgateway --features pkcs11`
+**Release status**: version selection follows remote tag inventory and SemVer;
+this section intentionally does not prescribe a tag. A release is publishable
+only after the exact Rust 1.95.0 validation gates pass on a clean commit and
+the canonical script produces one immutable artifact set containing:
 
-**Bugs caught and fixed during integration sprints**:
-- Sprint 27: `rotation_targets` Vec→HashMap promotion
-- Sprint 28: `monitor_handles` Vec→HashMap promotion + latent
-  task leak at SIGTERM
+- standard `qaudit`, `qaudit-portal`, and `qgateway` binaries plus a separately
+  named PKCS#11-enabled gateway variant;
+- source and platform-labelled binary archives with `Cargo.lock`, operator
+  docs, licenses, `NOTICE`, and `systemd/qgateway.service`;
+- CycloneDX SBOM, release manifest, and `SHA256SUMS`;
+- verified ML-DSA-87 and Sigstore signatures plus public verification material.
 
-**Operator-facing documentation**:
-- `SPEC.md` (5400+ lines): design specification and sprint
-  history
-- `README.md` (1490+ lines): orientation and quick start
-- `docs/RUNBOOK.md` (~700 lines): production deployment + daily ops
-- `docs/HSM.md` (~400 lines): PKCS#11 integration
+CI invokes the same `scripts/ci.sh` entry point used locally. Test totals are
+reported from each run rather than frozen in this document.
 
-**Known gaps for v1.1+** (operator-demand-gated):
-- `--dry-run` config validation
-- Reference Grafana dashboard JSON
-- Formal Bacen / LGPD compliance mapping
-- Kubernetes / Helm guide
-- OpenTelemetry export
-- gRPC management endpoint
-- Per-tenant audit signers
-- Multi-daemon / mesh-level testing
+**Implemented items previously listed as gaps**:
 
-**Recommended next move**: tag v1.0, push to git.securityops.co,
-announce on LinkedIn (PT + EN, same pattern as Evelin's launch),
-wait for real operator feedback. Continuing to sprint on
-speculation past v1.0 has decreasing marginal value.
+- offline configuration validation is `qgateway validate --config <path>`;
+- per-tenant signer selection is `[tenants.audit_signer]`, with the top-level
+  `[audit_signer]` as an optional default;
+- release signing, checksums, SBOM generation, manifest generation, and
+  systemd packaging are canonical release-script responsibilities.
+
+**Remaining operator-demand-gated gaps**:
+
+- reference Grafana dashboard JSON and formal Bacen/LGPD mapping;
+- backup/disaster-recovery and Kubernetes/Helm deployment guides;
+- OpenTelemetry export, gRPC management, sign-operation batching, and
+  multi-daemon/mesh testing;
+- independently demonstrated byte-for-byte binary reproducibility and a
+  cross-platform release matrix beyond targets actually built and validated.
 
 ---
 
 ## 14. CODING STANDARDS
 
-- Rust 2021, MSRV 1.75.
+- Rust 2021 with the exact Rust 1.95.0 release toolchain. The workspace
+  `rust-version = "1.95"` is the supported compiler floor; releases use the
+  exact patch pinned by `rust-toolchain.toml`.
 - `#![forbid(unsafe_code)]` in every crate of CSPQ origin.
 - `#![deny(missing_docs)]` in libraries with public surface.
 - Errors with `thiserror`; binaries panic-free, returning `Result` from `main`.
@@ -6689,11 +6698,16 @@ speculation past v1.0 has decreasing marginal value.
 
 ## 15. SUPPLY-CHAIN POSTURE
 
-- `cargo-deny` enforces license whitelist and CVE blocklist.
-- `cargo-audit` runs in CI on every PR.
-- All deps pinned by `Cargo.lock` (committed).
-- `cargo-vet` audit trail maintained from S7 onward.
-- Builds reproducible from a Nix flake (added S8).
+- `Cargo.lock` is committed, and canonical build/test commands use `--locked`.
+- `scripts/ci.sh` is the shared local/hosted validation entry point and runs
+  the dependency vulnerability gate with `cargo audit --deny warnings`.
+- There is currently no `deny.toml`, cargo-vet audit trail, or Nix flake; no
+  release or compliance claim may imply those controls exist.
+- `scripts/release.sh` creates deterministic archives, a CycloneDX SBOM,
+  machine-readable manifest, and `SHA256SUMS`, then fails closed unless both
+  ML-DSA-87 and Sigstore signatures verify for every releasable artifact.
+- Checksums detect byte changes but do not authenticate provenance; operators
+  must verify the detached signatures with independently trusted public keys.
 
 ---
 

@@ -1,0 +1,11 @@
+# Send only build inputs and license notices to the Docker daemon.
+*
+!Dockerfile
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/
+!crates/**
+!LICENSE-AGPL
+!LICENSE-COMMERCIAL
+!NOTICE

@@ -215,7 +215,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CspqStream<S> {
             send,
             recv,
             peer_id,
-            ..
+            read_state,
+            write_state,
         } = self;
         let (r, w) = tokio::io::split(inner);
         (
@@ -223,13 +224,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> CspqStream<S> {
                 inner: r,
                 recv,
                 peer_id: peer_id.clone(),
-                read_state: ReadState::Idle,
+                read_state,
             },
             CspqWriter {
                 inner: w,
                 send,
                 peer_id,
-                write_state: WriteState::Idle,
+                write_state,
             },
         )
     }
@@ -350,8 +351,8 @@ enum ReadState {
     Body { ct: Vec<u8>, filled: usize },
     /// Decrypted plaintext waiting to be copied to the caller.
     Drain { pt: Vec<u8>, pos: usize },
-    /// End-of-stream observed (either peer sent an EOF marker or the inner
-    /// stream returned a clean EOF between records). Subsequent `poll_read`s
+    /// An authenticated EOF marker was received, or a fatal read error was
+    /// returned. Subsequent `poll_read`s
     /// return `Ok(())` with an empty fill, the canonical AsyncRead EOF signal.
     Eof,
 }
@@ -395,6 +396,10 @@ fn poll_read_machine<R: AsyncRead + Unpin>(
     cx: &mut Context<'_>,
     out_buf: &mut ReadBuf<'_>,
 ) -> Poll<io::Result<()>> {
+    // Reading into an empty buffer must never consume a frame or wait for I/O.
+    if out_buf.remaining() == 0 {
+        return Poll::Ready(Ok(()));
+    }
     loop {
         let cur = std::mem::replace(state, ReadState::Idle);
         match cur {
@@ -448,20 +453,13 @@ fn poll_read_machine<R: AsyncRead + Unpin>(
                     Poll::Ready(Ok(())) => {
                         let n = rb.filled().len();
                         if n == 0 {
-                            // Inner returned EOF.
-                            if filled == 0 {
-                                // Clean: peer closed cleanly between frames.
-                                // Note: this is the *transport-layer* EOF (TCP
-                                // shutdown). It's distinct from the cooperative
-                                // CSPQ EOF marker (an authenticated empty
-                                // record). Either way we report end-of-stream.
-                                *state = ReadState::Eof;
-                                return Poll::Ready(Ok(()));
-                            }
+                            // Socket EOF is unauthenticated even at a record
+                            // boundary. Only a sealed empty record proves the
+                            // peer completed its application data.
                             *state = ReadState::Eof;
                             return Poll::Ready(Err(io::Error::new(
                                 io::ErrorKind::UnexpectedEof,
-                                "EOF while reading CSPQ length prefix",
+                                "CSPQ transport closed without an authenticated EOF marker",
                             )));
                         }
                         filled += n;
@@ -1350,11 +1348,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_read_clean_inner_eof_before_any_frame_is_clean_eof() {
-        // The other direction: peer closes the connection cleanly between
-        // records (no EOF marker, but no partial frame either). AsyncRead
-        // surfaces this as a clean EOF (Ok(0)), not as an error. This is
-        // the "TCP shutdown" path vs. the cooperative CSPQ EOF marker path.
+    async fn async_read_rejects_inner_eof_without_authenticated_marker() {
         let (wire_a, wire_b) = tokio::io::duplex(64);
         drop(wire_a); // immediate EOF
 
@@ -1366,7 +1360,51 @@ mod tests {
         };
 
         let mut buf = [0u8; 16];
-        let n = reader.read(&mut buf).await.unwrap();
-        assert_eq!(n, 0, "expected clean EOF on inner close between frames");
+        let err = reader.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn split_preserves_buffered_plaintext_and_authenticated_eof() {
+        let (mut client, mut server) = established().await;
+        client.send_record(b"buffered plaintext").await.unwrap();
+        client.send_eof().await.unwrap();
+        let mut first = [0u8; 3];
+        server.read_exact(&mut first).await.unwrap();
+        assert_eq!(&first, b"buf");
+        let (mut reader, _writer) = server.split();
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).await.unwrap();
+        assert_eq!(rest, b"fered plaintext");
+    }
+
+    #[tokio::test]
+    async fn split_preserves_pending_encrypted_write() {
+        let (mut client, mut server) = established().await;
+        let plaintext = b"pending encrypted write";
+        let sealed = client.send.seal(plaintext).unwrap();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(sealed.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&sealed);
+        // Represent a writer that yielded after sending part of a frame.
+        client.inner.write_all(&frame[..7]).await.unwrap();
+        client.write_state = WriteState::Writing {
+            frame,
+            written: 7,
+            consumed: plaintext.len(),
+        };
+        let (_reader, mut writer) = client.split();
+        writer.flush().await.unwrap();
+        assert_eq!(server.recv_record().await.unwrap(), plaintext);
+    }
+
+    #[tokio::test]
+    async fn empty_async_read_completes_without_waiting_for_peer() {
+        let (_client, mut server) = established().await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), server.read(&mut []))
+                .await
+                .expect("empty read must not wait for network input");
+        assert_eq!(result.unwrap(), 0);
     }
 }

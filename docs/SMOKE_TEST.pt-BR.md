@@ -12,9 +12,9 @@ cerca de 30 minutos de atenção. Não há nada específico de instalação nest
 procedimento — escolha quaisquer dois hosts, escolha qualquer porta TCP não reservada, siga
 os passos.
 
-Se este teste passar no seu ambiente, sua implantação carrega as
-mesmas garantias criptográficas da execução de referência documentada em
-`#observed-results` no final.
+Este teste exercita os caminhos de transporte e auditoria na configuração
+selecionada. Ele não constitui uma auditoria criptográfica independente nem
+certifica uma implantação em produção.
 
 ---
 
@@ -67,8 +67,8 @@ sudo install -m 0755 target/release/qgateway      /usr/local/bin/
 sudo install -m 0755 target/release/qaudit        /usr/local/bin/
 sudo install -m 0755 target/release/qaudit-portal /usr/local/bin/
 
-# Confirm
-qgateway --version    # qgateway 1.0.1
+# Confirme: os três comandos devem informar a mesma versão da release escolhida.
+qgateway --version
 qaudit --version
 qaudit-portal --version
 ```
@@ -418,14 +418,23 @@ qaudit-portal --log /var/log/qgateway/alice.qa --listen 127.0.0.1:8123
 
 Abra `http://127.0.0.1:8123`. Você deve ver:
 
-- Barra de cabeçalho: `20 entries · ✓ verified`
+- Contagem de 20 entradas assinadas e selo `✓ Assinaturas verificadas`
 - Tabela alternando linhas `session.open` e `session.close`
 - Por linha: timestamp, ator `svc:qgateway`, ação, recurso
   (`cspq://<session-id>`), metadados (duração, contagens de bytes, porta do peer),
-  e o hash da raiz progressiva truncado em 16 bytes
+  e o hash da raiz progressiva exibido como prefixo de 8 bytes
 
-Se o cabeçalho relatar qualquer coisa diferente de `✓ verified`, a cadeia está
-corrompida — veja `#known-edge-cases`.
+Se a verificação falhar, preserve o arquivo e examine `/api/verify` antes
+de usar o resultado como evidência. O selo verifica as assinaturas disponíveis;
+não comprova completude, tempo confiável nem procedência da chave.
+
+O portal exibe um retrato do arquivo carregado na inicialização. Reinicie-o
+para carregar novas entradas; a API usa o mesmo retrato. Acesse `?lang=pt-BR`
+para português e `?offset=0&limit=50` para paginar. Rótulos e datas do cabeçalho
+e `appended_at` não são autenticados no wire-v1. Preserve checkpoints externos
+para detectar exclusão de entradas completas no final.
+
+![Portal em português brasileiro](../screenshots/portal-pt-BR.png)
 
 ### Opcional — verificar com uma chave pública de auditoria publicada externamente
 
@@ -459,7 +468,7 @@ scp /etc/qgateway/server.audit.pub $USER@$CLIENT_IP:/tmp/server-real.pub
 
 No `CLIENT`, **sem** estabelecer qualquer nova conexão com o `SERVER`:
 ```bash
-qaudit verify --log /tmp/server-real.qa
+qaudit verify --log /tmp/server-real.qa --pk /tmp/server-real.pub
 qaudit inspect --log /tmp/server-real.qa | head
 ```
 
@@ -576,5 +585,7 @@ Divulgação honesta:
   suíte de integração `crates/qtransport-cspq/tests/`, não por este
   procedimento.
 
-Execute a suíte completa `cargo test --workspace --release --locked` (227+
-testes) para cobertura do acima.
+Execute a suíte completa
+`cargo test --workspace --release --locked --no-fail-fast` para cobrir os itens
+acima. O total muda conforme a cobertura cresce; use o resultado do comando
+como gate da release, não um número copiado para este documento.

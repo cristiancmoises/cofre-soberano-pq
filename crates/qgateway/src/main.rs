@@ -113,14 +113,13 @@ async fn main() -> Result<()> {
 
 fn cmd_keygen(sk_path: &Path, pk_path: &Path) -> Result<()> {
     let kp = KeyPair::generate().context("generating transport ML-DSA-87 keypair")?;
-    let id = IdentityKey::new(kp.clone());
-    id.save_public(pk_path)
-        .with_context(|| format!("writing {}", pk_path.display()))?;
+    let mut public = Vec::from(qtransport_cspq::IDENTITY_FILE_MAGIC.as_slice());
+    public.extend_from_slice(kp.public().as_bytes());
     let sk_bytes = kp.secret().as_bytes();
     let mut blob = Vec::with_capacity(8 + sk_bytes.len());
     blob.extend_from_slice(SK_FILE_MAGIC);
     blob.extend_from_slice(sk_bytes);
-    write_secret_file(sk_path, &blob).with_context(|| format!("writing {}", sk_path.display()))?;
+    auditkey::write_keypair_files(sk_path, pk_path, &blob, &public)?;
     eprintln!(
         "qgateway: generated transport identity\n  sk: {}\n  pk: {}\n  fp: {}",
         sk_path.display(),
@@ -318,10 +317,11 @@ fn validate_one_tenant(t: &TenantConfig, cfg: &Config) -> Result<()> {
 }
 
 fn validate_tls_cert(path: &Path) -> Result<()> {
-    let pem = std::fs::read(path).with_context(|| format!("TLS cert {}", path.display()))?;
-    let mut rd: &[u8] = &pem;
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
     let mut found_any = false;
-    for entry in rustls_pemfile::certs(&mut rd) {
+    for entry in CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("TLS cert {}", path.display()))?
+    {
         let _ = entry.with_context(|| format!("TLS cert {} (malformed PEM)", path.display()))?;
         found_any = true;
     }
@@ -335,34 +335,24 @@ fn validate_tls_cert(path: &Path) -> Result<()> {
 }
 
 fn validate_tls_key(path: &Path) -> Result<()> {
-    let pem = std::fs::read(path).with_context(|| format!("TLS key {}", path.display()))?;
-    // Try PKCS#8 first, then PKCS#1 RSA, then SEC1 EC — same order
-    // qgateway_core::tls::load_private_key does. We just need to
-    // know at least one parses; the daemon's actual loader handles
-    // selection.
-    let mut rd: &[u8] = &pem;
-    if rustls_pemfile::pkcs8_private_keys(&mut rd).next().is_some() {
-        return Ok(());
-    }
-    let mut rd: &[u8] = &pem;
-    if rustls_pemfile::rsa_private_keys(&mut rd).next().is_some() {
-        return Ok(());
-    }
-    let mut rd: &[u8] = &pem;
-    if rustls_pemfile::ec_private_keys(&mut rd).next().is_some() {
-        return Ok(());
-    }
-    Err(anyhow!(
-        "TLS key {} contains no PKCS#8, PKCS#1 RSA, or SEC1 EC key blocks",
-        path.display()
-    ))
+    use rustls::pki_types::{pem::PemObject, PrivateKeyDer};
+    PrivateKeyDer::from_pem_file(path).with_context(|| {
+        format!(
+            "TLS key {} (expected valid PKCS#8, PKCS#1 RSA, or SEC1 EC PEM)",
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn load_transport_identity(sk_path: &Path, pk_path: &Path) -> Result<IdentityKey> {
     let blob = std::fs::read(sk_path)
         .with_context(|| format!("reading transport SK {}", sk_path.display()))?;
-    if blob.len() < 8 + qaudit_core::signing::SECRET_KEY_LEN {
-        return Err(anyhow!("transport SK file too short: {} bytes", blob.len()));
+    if blob.len() != 8 + qaudit_core::signing::SECRET_KEY_LEN {
+        return Err(anyhow!(
+            "transport SK file has invalid length: {} bytes",
+            blob.len()
+        ));
     }
     if &blob[..8] != SK_FILE_MAGIC {
         return Err(anyhow!("transport SK file has bad magic"));
@@ -371,6 +361,9 @@ fn load_transport_identity(sk_path: &Path, pk_path: &Path) -> Result<IdentityKey
     let sk = qaudit_core::SecretKey::from_bytes(sk_bytes).context("decoding ML-DSA-87 SK")?;
     let pk = IdentityKey::load_public(pk_path)
         .with_context(|| format!("loading transport PK {}", pk_path.display()))?;
+    if sk.derive_public()? != pk {
+        return Err(anyhow!("transport public key does not match secret key"));
+    }
     Ok(IdentityKey::new(KeyPair::from_parts(pk, sk)))
 }
 
@@ -2630,27 +2623,53 @@ fn install_signal_handler(
     })
 }
 
-#[cfg(unix)]
-fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(contents)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
-    std::fs::write(path, contents)?;
-    Ok(())
-}
-
 #[allow(dead_code)]
 fn _retain_for_future_use(p: &Path) -> Result<PublicKey> {
     open_pk(p)
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn tls_key_validation_rejects_malformed_pem_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.pem");
+        std::fs::write(
+            &path,
+            concat!(
+                "-----BEGIN ",
+                "PRIVATE KEY-----\n!!!not-base64!!!\n-----END PRIVATE KEY-----\n"
+            ),
+        )
+        .unwrap();
+        assert!(validate_tls_key(&path).is_err());
+    }
+
+    #[test]
+    fn transport_key_generation_does_not_replace_existing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let sk = dir.path().join("identity.skid");
+        let pk = dir.path().join("identity.cspqid.pub");
+        cmd_keygen(&sk, &pk).unwrap();
+        let original_sk = std::fs::read(&sk).unwrap();
+        let original_pk = std::fs::read(&pk).unwrap();
+        assert!(cmd_keygen(&sk, &pk).is_err());
+        assert_eq!(std::fs::read(&sk).unwrap(), original_sk);
+        assert_eq!(std::fs::read(&pk).unwrap(), original_pk);
+        load_transport_identity(&sk, &pk).unwrap();
+    }
+
+    #[test]
+    fn transport_identity_rejects_mismatched_keypair() {
+        let dir = tempfile::tempdir().unwrap();
+        let sk_a = dir.path().join("a.skid");
+        let pk_a = dir.path().join("a.pub");
+        let sk_b = dir.path().join("b.skid");
+        let pk_b = dir.path().join("b.pub");
+        cmd_keygen(&sk_a, &pk_a).unwrap();
+        cmd_keygen(&sk_b, &pk_b).unwrap();
+        assert!(load_transport_identity(&sk_a, &pk_b).is_err());
+    }
 }
