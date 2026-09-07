@@ -1593,6 +1593,14 @@ Chaves de software são exclusivas do modo de desenvolvimento.
 
 ## Empacotamento para distribuições
 
+A release assinada v1.0.3 está disponível no [GitHub](https://github.com/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.3),
+[Codeberg](https://codeberg.org/berkeley/cofre-soberano-pq/releases/tag/v1.0.3)
+e [SecurityOps Brasil](https://git.securityops.com.br/cristiancmoises/cofre-soberano-pq/releases/tag/v1.0.3).
+Há bundles para GNU/Linux x86_64 e FreeBSD 14.4 amd64. O bundle FreeBSD
+contém as três ferramentas, com PKCS#11 habilitado no `qgateway`; as evidências
+do build estão em `native-build-metadata.json` e os checksums em `SHA256SUMS.freebsd`.
+Consulte o [runbook](docs/RUNBOOK.pt-BR.md#21-distribuição-do-binário) para verificar as assinaturas.
+
 O repositório inclui receitas para Nix e GNU Guix em `packaging/`. São
 receitas do projeto; a disponibilidade em repositórios oficiais depende da
 revisão e aceitação de cada distribuição.
@@ -1602,8 +1610,13 @@ nix-build --no-out-link -E 'let pkgs = import <nixpkgs> {}; in pkgs.callPackage 
 guix build -f packaging/guix/package.scm
 ```
 
-A receita Guix exige um canal que exporte `rust-1.95`. O gerador
-`packaging/prepare-release.py` prepara candidatos para nixpkgs, Arch, Alpine e
+A receita Guix usa o pacote completo `rust` suportado, incluindo `rustdoc`.
+O código original da release v1.0.3 passou nos 278 testes, incluindo o doctest,
+em x86_64-linux com Rust 1.93.0 do Guix; um teste com hardware PKCS#11 real
+foi ignorado. Essa validação do pacote da distribuição mantém o toolchain
+canônico de release Rust 1.95.0 e o requisito de compilador declarado.
+
+O gerador `packaging/prepare-release.py` prepara candidatos para nixpkgs, Arch, Alpine e
 FreeBSD a partir de um arquivo-fonte de release e sua URL HTTPS, em um novo
 diretório fora da árvore de fontes. Use `--help` para os argumentos completos.
 

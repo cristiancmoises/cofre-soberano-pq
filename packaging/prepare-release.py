@@ -61,8 +61,14 @@ pkgdesc='@DESCRIPTION@'
 arch=('x86_64' 'aarch64')
 url='@HOMEPAGE@'
 license=('AGPL-3.0-or-later')
-depends=('gcc-libs' 'glibc')
-makedepends=('cargo')
+depends=('glibc' 'libgcc')
+makedepends=('cargo' 'rust>=1.95')
+# ring uses C objects; keep Cargo's LTO and disable makepkg's C/C++ LTO.
+options=('!lto')
+
+export CARGO_TARGET_DIR=target
+export CARGO_PROFILE_RELEASE_STRIP=none
+export RUSTUP_TOOLCHAIN=stable
 source=('@URL@')
 sha256sums=('@SHA256@')
 
@@ -107,26 +113,26 @@ source="@URL@"
 builddir="$srcdir/@ROOT@"
 
 prepare() {
-    default_prepare
-    cargo fetch --target="$CTARGET" --locked
+\tdefault_prepare
+\tcargo fetch --target="$CTARGET" --locked
 }
 
 build() {
-    cargo auditable build --release --frozen --workspace --features qgateway/pkcs11
+\tcargo auditable build --release --frozen --workspace --features qgateway/pkcs11
 }
 
 check() {
-    cargo test --frozen --workspace --features qgateway/pkcs11
+\tRUST_TEST_THREADS=1 cargo test --frozen --workspace --features qgateway/pkcs11
 }
 
 package() {
-    for binary in qaudit qaudit-portal qgateway; do
-        install -Dm755 "target/release/$binary" "$pkgdir/usr/bin/$binary"
-    done
-    install -Dm644 LICENSE-AGPL "$pkgdir/usr/share/licenses/$pkgname/LICENSE-AGPL"
-    install -Dm644 README.md README.pt-BR.md NOTICE -t "$pkgdir/usr/share/doc/$pkgname/"
-    cp -r docs "$pkgdir/usr/share/doc/$pkgname/"
-    cp -r screenshots "$pkgdir/usr/share/doc/$pkgname/"
+\tfor binary in qaudit qaudit-portal qgateway; do
+\t\tinstall -Dm755 "target/release/$binary" "$pkgdir/usr/bin/$binary"
+\tdone
+\tinstall -Dm644 LICENSE-AGPL "$pkgdir/usr/share/licenses/$pkgname/LICENSE-AGPL"
+\tinstall -Dm644 README.md README.pt-BR.md NOTICE -t "$pkgdir/usr/share/doc/$pkgname/"
+\tcp -r docs "$pkgdir/usr/share/doc/$pkgname/"
+\tcp -r screenshots "$pkgdir/usr/share/doc/$pkgname/"
 }
 
 sha512sums="
@@ -139,6 +145,7 @@ DISTVERSION=\t@VERSION@
 CATEGORIES=\tsecurity
 MASTER_SITES=\t@BASEURL@
 DISTNAME=\t@ROOT@
+DISTFILES=\t${DISTNAME}${EXTRACT_SUFX}
 
 MAINTAINER=\tsac@securityops.co
 COMMENT=\t@DESCRIPTION@
@@ -147,19 +154,21 @@ WWW=\t\t@HOMEPAGE@
 LICENSE=\tAGPLv3+
 LICENSE_FILE=\t${WRKSRC}/LICENSE-AGPL
 
-USES=\t\tcargo
+USES=\t\t\tcargo
+CARGO_FEATURES=\t\tqgateway/pkcs11
 CARGO_BUILD_ARGS=\t--workspace
+CARGO_INSTALL=\t\tno
 CARGO_TEST_ARGS=\t--workspace
-CARGO_FEATURES=\tqgateway/pkcs11
-CARGO_INSTALL=\tno
 
-PLIST_FILES=\tbin/qaudit bin/qaudit-portal bin/qgateway
-PORTDOCS=\tREADME.md README.pt-BR.md NOTICE docs screenshots
+PLIST_FILES=\tbin/qaudit \\
+\t\tbin/qaudit-portal \\
+\t\tbin/qgateway
+PORTDOCS=\tNOTICE README.md README.pt-BR.md docs screenshots
 OPTIONS_DEFINE=\tDOCS
 
 do-install:
 .for binary in qaudit qaudit-portal qgateway
-\t${INSTALL_PROGRAM} ${CARGO_TARGET_DIR}/release/${binary} ${STAGEDIR}${PREFIX}/bin/
+\t${INSTALL_PROGRAM} ${CARGO_TARGET_DIR}/${WITH_DEBUG:Ddebug:Urelease}/${binary} ${STAGEDIR}${PREFIX}/bin/
 .endfor
 
 do-install-DOCS-on:

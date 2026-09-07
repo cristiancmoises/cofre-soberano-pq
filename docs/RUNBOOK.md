@@ -74,7 +74,7 @@ audit `.audit.pub` artifact.
 
 Each release publishes a platform-labelled binary bundle, a source archive,
 an SBOM, a machine-readable manifest, `SHA256SUMS`, and detached ML-DSA-87 and
-Sigstore signatures. The binary bundle contains:
+Sigstore signatures. The canonical GNU/Linux binary bundle contains:
 
 ```
 cofre-soberano-pq-vX.Y.Z-<rust-host-triple>/
@@ -123,6 +123,23 @@ cosign verify-blob --key "$COFRE_KEYS/release-sigstore-public.pem" \
   --bundle "$COFRE_ASSET.sigstore.json" "$COFRE_ASSET"
 sha256sum -c SHA256SUMS
 ```
+
+The v1.0.3 FreeBSD supplement targets FreeBSD 14.4 amd64 and contains
+`qaudit`, `qaudit-portal`, and `qgateway` with PKCS#11 enabled. Verify
+`SHA256SUMS.freebsd` and the FreeBSD archive using the same two signature
+commands above, setting `COFRE_ASSET` to each filename. On FreeBSD, check the
+archive digest with the native [sha256 utility](https://man.freebsd.org/cgi/man.cgi?query=sha256&sektion=1):
+
+```sh
+read -r COFRE_EXPECTED COFRE_ARCHIVE < SHA256SUMS.freebsd
+sha256 -c "$COFRE_EXPECTED" "$COFRE_ARCHIVE"
+```
+
+Its embedded
+`native-build-metadata.json` records Rust 1.97.1 and 278 passing native tests;
+the original release manifest and SBOM describe the GNU/Linux build. The
+FreeBSD bundle omits systemd files; the service installation steps below
+apply to GNU/Linux.
 
 Install the standard gateway, or install the PKCS#11 variant under the
 operational name `qgateway` when HSM support is required:

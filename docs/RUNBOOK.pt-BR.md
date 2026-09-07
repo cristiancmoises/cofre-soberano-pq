@@ -74,7 +74,7 @@ com o artefato de auditoria `.audit.pub`.
 
 Cada release publica um bundle binário identificado pela plataforma, um
 arquivo-fonte, um SBOM, um manifesto legível por máquina, `SHA256SUMS` e
-assinaturas destacadas ML-DSA-87 e Sigstore. O bundle binário contém:
+assinaturas destacadas ML-DSA-87 e Sigstore. O bundle canônico GNU/Linux contém:
 
 ```
 cofre-soberano-pq-vX.Y.Z-<rust-host-triple>/
@@ -124,6 +124,22 @@ cosign verify-blob --key "$COFRE_KEYS/release-sigstore-public.pem" \
   --bundle "$COFRE_ASSET.sigstore.json" "$COFRE_ASSET"
 sha256sum -c SHA256SUMS
 ```
+
+O complemento v1.0.3 para FreeBSD 14.4 amd64 contém `qaudit`, `qaudit-portal`
+e `qgateway` com PKCS#11 habilitado. Verifique `SHA256SUMS.freebsd` e o arquivo
+FreeBSD com os mesmos dois comandos de assinatura acima, ajustando
+`COFRE_ASSET` para cada nome. No FreeBSD, confira o digest com o
+[utilitário sha256 nativo](https://man.freebsd.org/cgi/man.cgi?query=sha256&sektion=1):
+
+```sh
+read -r COFRE_EXPECTED COFRE_ARCHIVE < SHA256SUMS.freebsd
+sha256 -c "$COFRE_EXPECTED" "$COFRE_ARCHIVE"
+```
+
+O `native-build-metadata.json` incluído registra
+Rust 1.97.1 e 278 testes nativos aprovados; o manifesto e o SBOM originais
+descrevem o build GNU/Linux. O bundle FreeBSD não inclui arquivos systemd;
+os passos de instalação do serviço abaixo se aplicam ao GNU/Linux.
 
 Instale o gateway padrão ou, quando houver necessidade de HSM, instale a
 variante PKCS#11 sob o nome operacional `qgateway`:

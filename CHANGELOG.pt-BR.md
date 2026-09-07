@@ -15,6 +15,22 @@ novo identificador de suite.
 
 ---
 
+## [Não lançado]
+
+### Corrigido
+
+- **Seleção do compilador Guix.** Usa o pacote Rust completo suportado para
+  disponibilizar `rustdoc` aos doctests. O código original da v1.0.3 passou em
+  278 testes com Rust 1.93.0 do Guix (um teste de hardware ignorado); o pin
+  canônico de release permanece em 1.95.0.
+- **Receitas nativas de pacotes.** Inclui o arquivo-fonte e respeita builds de
+  debug no FreeBSD; usa a indentação exigida pelo Alpine e serializa testes
+  sensíveis ao tempo; ajusta dependências e opções Cargo do Arch conforme a
+  validação nativa.
+- **Orientações para download FreeBSD.** Inclui links para o complemento
+  nativo assinado v1.0.3, seus checksums próprios, evidências do compilador
+  e comandos de verificação.
+
 ## [1.0.3] — 2026-09-06
 
 Atualização de segurança, integridade de release e usabilidade bilíngue.

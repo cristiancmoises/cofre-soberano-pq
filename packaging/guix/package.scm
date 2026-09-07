@@ -1,6 +1,6 @@
 ;; Build from a checkout with:
 ;; guix build -f packaging/guix/package.scm
-;; Requires a Guix revision providing rust-1.95.
+;; Use the supported full Rust toolchain, including rustdoc for doctests.
 
 (use-modules (ice-9 rdelim)
              (guix packages)
@@ -32,7 +32,7 @@
                         #:select? (git-predicate source-directory)))
     (build-system cargo-build-system)
     (arguments
-     (list #:rust rust-1.95
+     (list #:rust rust
            #:install-source? #f
            #:features ''("qgateway/pkcs11")
            #:cargo-build-flags ''("--release" "--workspace")
