@@ -96,13 +96,17 @@ fn validate_does_not_bind_listen_port() {
     // that validate is non-interfering: we manually bind the tenant's
     // port from the test, then run validate, then confirm validate
     // exited 0 (it didn't try to bind).
+    // Reserve the port before preparing the fixture and keep the listener
+    // alive throughout validation. Releasing and rebinding a picked port
+    // lets another test claim it before this test can establish its setup.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .expect("reserve a listener to prove non-interference");
+    let alice_port = listener
+        .local_addr()
+        .expect("reserved listener address")
+        .port();
     let fx = Fixture::build(&["alice"]);
-    let alice_port = fx.tenant_ports[0];
-
-    // Hold the port from the test process. If validate tried to
-    // bind, it would fail with EADDRINUSE.
-    let _hold = std::net::TcpListener::bind(("127.0.0.1", alice_port))
-        .expect("test must be able to bind alice's port to prove non-interference");
+    fx.write_config_with(&[("alice", alice_port)]);
 
     let out = Command::new(qgateway_bin())
         .arg("validate")
